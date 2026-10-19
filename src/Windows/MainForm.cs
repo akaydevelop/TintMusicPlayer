@@ -5,7 +5,7 @@ using Microsoft.Web.WebView2.WinForms;
 namespace Tint;
 
 /// <summary>The window: a native frame, tinted to match the page, around a single WebView2.</summary>
-sealed class MainForm : Form
+sealed class MainForm : Form, IHost
 {
     static readonly Color IdleBackground = Color.FromArgb(0x14, 0x26, 0x2B);
     static readonly Color IdleText = Color.FromArgb(0xED, 0xF2, 0xEF);
@@ -307,6 +307,16 @@ sealed class MainForm : Form
     }
 
     // ---- called from the local server ------------------------------------------------------------
+
+    // The server asks from its own threads; the window answers on its own.
+    Task<string?> IHost.PickFolder() => Task.FromResult(OnUi(PickFolder));
+    Task<string?> IHost.PickKeyFile() => Task.FromResult(OnUi(PickKeyFile));
+    void IHost.TintChrome(Color background, Color text, bool instant) => OnUi(() => TintChrome(background, text, instant));
+    void IHost.SetMini(bool on) => OnUi(() => SetMini(on));
+    Task<bool> IHost.YouTubeSignIn() => OnUi(YouTubeSignIn);
+    Task IHost.YouTubeSignOut() => OnUi(YouTubeSignOut);
+    Task<bool> IHost.OpenYouTubePage(bool again) => OnUi(() => OpenYouTubePage(again));
+    void IHost.ShowNowPlaying(SystemTrack? track, bool playing, long at) => OnUi(() => ShowNowPlaying(track, playing, at));
 
     public void OnUi(Action action)
     {

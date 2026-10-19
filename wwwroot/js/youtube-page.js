@@ -14,6 +14,33 @@
   const player = () => document.getElementById('movie_player');
   const app = () => document.querySelector('ytmusic-app');
 
+  // In a browser app window (the Linux build), the browser gives the media keys and the system's
+  // player controls to whichever page is playing, and while a YouTube song plays that is this
+  // one. The site's own Media Session would show its idea of the song and keep the keys for its
+  // own queue; instead it shows what Tint says (do: 'session') and the keys go back to Tint.
+  const session = window.tintBrowserHost && 'mediaSession' in navigator ? navigator.mediaSession : null;
+  let describe = null;
+  if (session) {
+    const proto = Object.getPrototypeOf(session);
+    const metadata = Object.getOwnPropertyDescriptor(proto, 'metadata');
+    const playbackState = Object.getOwnPropertyDescriptor(proto, 'playbackState');
+    const setHandler = session.setActionHandler.bind(session);
+    Object.defineProperty(session, 'metadata', { get: () => metadata.get.call(session), set: () => {} });
+    Object.defineProperty(session, 'playbackState', { get: () => playbackState.get.call(session), set: () => {} });
+    session.setActionHandler = () => {};
+    session.setPositionState = () => {};
+    const pass = (name) => () => say({ is: 'command', name });
+    setHandler('play', pass('play'));
+    setHandler('pause', pass('pause'));
+    setHandler('nexttrack', pass('next'));
+    setHandler('previoustrack', pass('previous'));
+    describe = (ask) => {
+      const artwork = /^https:\/\//.test(ask.art || '') ? [{ src: ask.art, sizes: '320x320', type: 'image/jpeg' }] : [];
+      metadata.set.call(session, ask.title ? new MediaMetadata({ title: ask.title, artist: ask.artist || '', album: ask.album || '', artwork }) : null);
+      playbackState.set.call(session, !ask.title ? 'none' : ask.playing ? 'playing' : 'paused');
+    };
+  }
+
   let wanted = null;    // the song Tint asked for
   let seen = false;     // the player has got as far as loading it
   let finished = false; // and has played it to the end
@@ -98,6 +125,10 @@
 
   window.chrome.webview.addEventListener('message', (event) => {
     const ask = event.data;
+    if (ask?.to === 'youtube' && ask.do === 'session') {
+      describe?.(ask);
+      return;
+    }
     const p = player();
     if (!ask || ask.to !== 'youtube' || !p) return;
 

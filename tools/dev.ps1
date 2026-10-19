@@ -8,7 +8,7 @@ Get-Process Tint -ErrorAction SilentlyContinue | ForEach-Object {
     if (-not $_.WaitForExit(3000)) { $_ | Stop-Process -Force }
 }
 if (-not $NoBuild) {
-    dotnet build (Join-Path $root 'Tint.csproj') -c Debug -nologo -v q | Select-Object -Last 4
+    dotnet build (Join-Path $root 'Tint.csproj') -f net10.0-windows -c Debug -nologo -v q | Select-Object -Last 4
     if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
 }
 Start-Process (Join-Path $root 'bin\Debug\net10.0-windows\Tint.exe') -ArgumentList '--dev'

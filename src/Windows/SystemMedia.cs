@@ -2,9 +2,6 @@ using System.Runtime.InteropServices;
 
 namespace Tint;
 
-/// <summary>The song as Windows should show it. The cover is either a file on this PC or a public address.</summary>
-sealed record SystemTrack(string Title, string Artist, string Album, string? ArtFile, string? ArtUrl);
-
 /// <summary>
 /// Puts the current song in Windows' own media controls (the panel in Quick Settings and on the
 /// lock screen) and hears the keyboard's play, pause, next and previous keys, whichever app is in

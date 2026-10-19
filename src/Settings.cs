@@ -12,9 +12,9 @@ sealed class Settings
 
     public string? AppleTeamId { get; set; }
     public string? AppleKeyId { get; set; }
-    /// <summary>The MusicKit .p8 private key, encrypted for the current Windows user.</summary>
+    /// <summary>The MusicKit .p8 private key, kept with Protect.</summary>
     public string? ApplePrivateKeyProtected { get; set; }
-    /// <summary>A ready-made developer token pasted by the user, encrypted for the current Windows user.</summary>
+    /// <summary>A ready-made developer token pasted by the user, kept with Protect.</summary>
     public string? AppleRawTokenProtected { get; set; }
 
     /// <summary>Use the token Apple's own web player ships with, for people without a developer key.</summary>
@@ -50,10 +50,12 @@ sealed class Settings
         if (!s.FoldersInitialized)
         {
             var music = Environment.GetFolderPath(Environment.SpecialFolder.MyMusic);
-            foreach (var candidate in new[] { @"iTunes\iTunes Media", @"Apple Music\Media" })
+            // Windows: where iTunes and Apple Music keep their files. Elsewhere: the Music folder itself.
+            var candidates = OperatingSystem.IsWindows() ? new[] { @"iTunes\iTunes Media", @"Apple Music\Media" } : new[] { "" };
+            foreach (var candidate in candidates)
             {
-                var path = Path.Combine(music, candidate);
-                if (Directory.Exists(path) && !s.Folders.Contains(path, StringComparer.OrdinalIgnoreCase))
+                var path = Path.Combine(music, candidate).TrimEnd(Path.DirectorySeparatorChar);
+                if (music.Length > 0 && Directory.Exists(path) && !s.Folders.Contains(path, StringComparer.OrdinalIgnoreCase))
                     s.Folders.Add(path);
             }
             s.FoldersInitialized = true;
@@ -79,15 +81,35 @@ sealed class Settings
         }
     }
 
-    public static string Protect(string plain) =>
-        Convert.ToBase64String(ProtectedData.Protect(Encoding.UTF8.GetBytes(plain), null, DataProtectionScope.CurrentUser));
+    // Kept stored values readable as what they are: "plain:" marks one that only file permissions guard.
+    const string Plain = "plain:";
+
+    /// <summary>
+    /// On Windows, encrypted for the current Windows user (DPAPI). Linux has nothing built in to match
+    /// it, so there the value is only encoded, and guarded by Tint's data folder being readable by
+    /// its owner alone (see Paths).
+    /// </summary>
+    public static string Protect(string plain)
+    {
+#if WINDOWS
+        return Convert.ToBase64String(ProtectedData.Protect(Encoding.UTF8.GetBytes(plain), null, DataProtectionScope.CurrentUser));
+#else
+        return Plain + Convert.ToBase64String(Encoding.UTF8.GetBytes(plain));
+#endif
+    }
 
     public static string? Unprotect(string? stored)
     {
         if (string.IsNullOrEmpty(stored)) return null;
         try
         {
+            if (stored.StartsWith(Plain, StringComparison.Ordinal))
+                return Encoding.UTF8.GetString(Convert.FromBase64String(stored[Plain.Length..]));
+#if WINDOWS
             return Encoding.UTF8.GetString(ProtectedData.Unprotect(Convert.FromBase64String(stored), null, DataProtectionScope.CurrentUser));
+#else
+            return null;
+#endif
         }
         catch
         {

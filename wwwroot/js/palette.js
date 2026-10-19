@@ -188,6 +188,17 @@ export function themeFrom(palette, { keepDark = false } = {}) {
 
 let applied = null;
 
+/** The page's <meta name="theme-color">, made on first use. */
+function themeColor() {
+  let meta = document.querySelector('meta[name="theme-color"]');
+  if (!meta) {
+    meta = document.createElement('meta');
+    meta.name = 'theme-color';
+    document.head.append(meta);
+  }
+  return meta;
+}
+
 export function applyTheme(theme, { instant = false } = {}) {
   if (applied && Object.keys(theme).every((k) => applied[k] === theme[k])) return;
   applied = theme;
@@ -202,6 +213,8 @@ export function applyTheme(theme, { instant = false } = {}) {
   root.style.setProperty('--accent', theme.accent);
   root.style.setProperty('--on-accent', theme.onAccent);
   if (instant) requestAnimationFrame(() => root.classList.remove('no-fade'));
-  // The native title bar follows along.
+  // The native title bar follows along: on Windows the host colours it, in a browser app window
+  // the browser does, from the page's theme colour.
   post('/api/chrome', { bg: theme.bg, fg: theme.ink, instant }).catch(() => {});
+  if (window.tintBrowserHost) themeColor().content = theme.bg;
 }

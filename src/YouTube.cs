@@ -35,7 +35,11 @@ sealed partial class YouTube : IDisposable
 
     static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(60) };
     static readonly string Folder = Path.Combine(Paths.Data, "youtube");
-    static readonly string OwnTool = Path.Combine(Folder, "yt-dlp.exe");
+    static readonly string OwnTool = Path.Combine(Folder, Exe("yt-dlp"));
+    // yt-dlp publishes one ready-to-run file per system; the Linux ones need no Python installed.
+    static readonly string ReleaseFile = OperatingSystem.IsWindows() ? "yt-dlp.exe"
+        : System.Runtime.InteropServices.RuntimeInformation.OSArchitecture == System.Runtime.InteropServices.Architecture.Arm64 ? "yt-dlp_linux_aarch64"
+        : "yt-dlp_linux";
     static readonly string CookieFile = Path.Combine(Folder, "cookies.txt");
 
     readonly ConcurrentDictionary<string, Task<YouTubeStream>> _streams = new();
@@ -52,9 +56,12 @@ sealed partial class YouTube : IDisposable
     // ---- yt-dlp ---------------------------------------------------------------------------------
 
     /// <summary>Tint's own copy when there is one (it is the one kept up to date), else whatever PATH offers.</summary>
-    static string? Tool() => File.Exists(OwnTool) ? OwnTool : OnPath("yt-dlp.exe");
+    static string? Tool() => File.Exists(OwnTool) ? OwnTool : OnPath(Exe("yt-dlp"));
 
-    static string? Deno() => OnPath("deno.exe");
+    static string? Deno() => OnPath(Exe("deno"));
+
+    /// <summary>A program's file name as it is on this system: "deno.exe" on Windows, "deno" elsewhere.</summary>
+    internal static string Exe(string name) => OperatingSystem.IsWindows() ? name + ".exe" : name;
 
     static string? OnPath(string file) =>
         (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -75,7 +82,7 @@ sealed partial class YouTube : IDisposable
             tool = tool == null ? null : tool == OwnTool ? "own" : "path",
             version,
             // yt-dlp hands YouTube's player script to a JavaScript runtime. Without one it gets very little.
-            runtime = Deno() != null || OnPath("node.exe") != null,
+            runtime = Deno() != null || OnPath(Exe("node")) != null,
             deno = Deno() != null,
             signedIn = SignedIn,
             tokens = _tokens.Installed,
@@ -117,7 +124,7 @@ sealed partial class YouTube : IDisposable
     /// <summary>Downloads the token add-on (and yt-dlp itself, if Tint has no copy of its own to load it into).</summary>
     public async Task InstallTokens()
     {
-        var deno = Deno() ?? throw new InvalidOperationException("The token helper runs on Deno, which isn't on this PC. Install Deno, then start Tint again.");
+        var deno = Deno() ?? throw new InvalidOperationException("The token helper runs on Deno, which isn't on this computer. Install Deno, then start Tint again.");
         if (!File.Exists(OwnTool)) await Install();
         await _tokens.Install(deno);
         _streams.Clear();
@@ -129,18 +136,20 @@ sealed partial class YouTube : IDisposable
     public async Task Install()
     {
         Directory.CreateDirectory(Folder);
-        var bytes = await Http.GetByteArrayAsync(Releases + "yt-dlp.exe");
+        var bytes = await Http.GetByteArrayAsync(Releases + ReleaseFile);
 
         // The release lists a SHA-256 for every file in it. A download that doesn't match is not kept.
         var sums = await Http.GetStringAsync(Releases + "SHA2-256SUMS");
         var wanted = sums.Split('\n').Select(line => line.Split(' ', StringSplitOptions.RemoveEmptyEntries))
-            .FirstOrDefault(parts => parts.Length == 2 && parts[1].Trim().TrimStart('*') == "yt-dlp.exe")?[0];
+            .FirstOrDefault(parts => parts.Length == 2 && parts[1].Trim().TrimStart('*') == ReleaseFile)?[0];
         var got = Convert.ToHexString(SHA256.HashData(bytes));
         if (wanted == null || !got.Equals(wanted, StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("The yt-dlp download didn't match its published checksum, so it wasn't kept.");
 
         var tmp = OwnTool + ".tmp";
         await File.WriteAllBytesAsync(tmp, bytes);
+        if (!OperatingSystem.IsWindows())
+            File.SetUnixFileMode(tmp, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         File.Move(tmp, OwnTool, overwrite: true);
         _streams.Clear();
     }

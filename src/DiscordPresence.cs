@@ -1,4 +1,5 @@
 using System.IO.Pipes;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -9,7 +10,7 @@ sealed record NowPlaying(string Title, string Artist, string Album, double Durat
 
 /// <summary>
 /// Shows the current song on the person's Discord profile ("Listening to ..."). Discord's desktop
-/// app listens on a local named pipe; each message is an opcode, a length and a JSON body.
+/// app listens on a local named pipe (a socket file on Linux); each message is an opcode, a length and a JSON body.
 /// </summary>
 sealed class DiscordPresence : IDisposable
 {
@@ -27,7 +28,7 @@ sealed class DiscordPresence : IDisposable
     readonly CancellationTokenSource _stop = new();
 
     NowPlaying? _wanted;
-    NamedPipeClientStream? _pipe;
+    Stream? _pipe;
     string? _pipeAppId;
 
     /// <summary>off | waiting | connected | rejected</summary>
@@ -84,7 +85,7 @@ sealed class DiscordPresence : IDisposable
                     continue;
                 }
 
-                if (_pipe != null && (_pipeAppId != appId || !_pipe.IsConnected)) Disconnect();
+                if (_pipe != null && (_pipeAppId != appId || !IsOpen(_pipe))) Disconnect();
                 if (_pipe == null && !await Connect(appId, token)) continue;
 
                 NowPlaying? now;
@@ -171,10 +172,11 @@ sealed class DiscordPresence : IDisposable
     {
         for (int i = 0; i < 10; i++)
         {
-            var pipe = new NamedPipeClientStream(".", $"discord-ipc-{i}", PipeDirection.InOut, PipeOptions.Asynchronous);
+            Stream? pipe = null;
             try
             {
-                await pipe.ConnectAsync(200, token);
+                pipe = await Open(i, token);
+                if (pipe == null) continue;
                 _pipe = pipe;
                 await Send(OpHandshake, new JsonObject { ["v"] = 1, ["client_id"] = appId }, token);
 
@@ -202,13 +204,13 @@ sealed class DiscordPresence : IDisposable
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
             {
-                pipe.Dispose();
+                pipe?.Dispose();
                 throw;
             }
             catch (Exception)
             {
                 // No Discord on this pipe number (or it stopped answering). Try the next one.
-                pipe.Dispose();
+                pipe?.Dispose();
                 _pipe = null;
             }
         }
@@ -217,12 +219,68 @@ sealed class DiscordPresence : IDisposable
         return false;
     }
 
+    /// <summary>
+    /// Discord's door number `i`, or null when nothing is behind it. On Windows that is a named pipe;
+    /// on Linux a socket file in the runtime folder, or in the folder of a Flatpak or Snap Discord.
+    /// </summary>
+    static async Task<Stream?> Open(int i, CancellationToken token)
+    {
+        var name = $"discord-ipc-{i}";
+        if (OperatingSystem.IsWindows())
+        {
+            var pipe = new NamedPipeClientStream(".", name, PipeDirection.InOut, PipeOptions.Asynchronous);
+            try
+            {
+                await pipe.ConnectAsync(200, token);
+                return pipe;
+            }
+            catch
+            {
+                pipe.Dispose();
+                throw;
+            }
+        }
+
+        var runtime = Environment.GetEnvironmentVariable("XDG_RUNTIME_DIR") is { Length: > 0 } dir ? dir : Path.GetTempPath();
+        foreach (var folder in new[] { runtime, Path.Combine(runtime, "app", "com.discordapp.Discord"), Path.Combine(runtime, "snap.discord"), Path.GetTempPath() })
+        {
+            var file = Path.Combine(folder, name);
+            if (!File.Exists(file)) continue;
+            var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+            try
+            {
+                using var patience = CancellationTokenSource.CreateLinkedTokenSource(token);
+                patience.CancelAfter(TimeSpan.FromMilliseconds(500));
+                await socket.ConnectAsync(new UnixDomainSocketEndPoint(file), patience.Token);
+                return new NetworkStream(socket, ownsSocket: true);
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                socket.Dispose();
+                throw;
+            }
+            catch
+            {
+                // A file left behind by a Discord that has quit. Another folder may hold the live one.
+                socket.Dispose();
+            }
+        }
+        return null;
+    }
+
+    static bool IsOpen(Stream pipe) => pipe switch
+    {
+        PipeStream p => p.IsConnected,
+        NetworkStream n => n.Socket.Connected,
+        _ => false,
+    };
+
     /// <summary>Answers Discord's pings and notices when it goes away.</summary>
-    async Task Listen(NamedPipeClientStream pipe, CancellationToken token)
+    async Task Listen(Stream pipe, CancellationToken token)
     {
         try
         {
-            while (pipe.IsConnected && !token.IsCancellationRequested)
+            while (!token.IsCancellationRequested)
             {
                 var (op, message) = await Read(pipe, token);
                 if (op == OpPing) await Send(OpPong, message ?? new JsonObject(), token);
@@ -267,7 +325,7 @@ sealed class DiscordPresence : IDisposable
         }
     }
 
-    static async Task<(int Op, JsonNode? Body)> Read(NamedPipeClientStream pipe, CancellationToken token)
+    static async Task<(int Op, JsonNode? Body)> Read(Stream pipe, CancellationToken token)
     {
         var header = new byte[8];
         await pipe.ReadExactlyAsync(header, token);

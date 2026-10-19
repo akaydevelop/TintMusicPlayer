@@ -12,7 +12,7 @@ Get-Process Tint -ErrorAction SilentlyContinue | ForEach-Object {
 }
 
 if (Test-Path $dist) { Remove-Item $dist -Recurse -Force }
-dotnet publish (Join-Path $root 'Tint.csproj') -c Release -r win-x64 --self-contained false `
+dotnet publish (Join-Path $root 'Tint.csproj') -f net10.0-windows -c Release -r win-x64 --self-contained false `
     -p:PublishSingleFile=true -p:DebugType=none -o $dist -nologo -v q
 if ($LASTEXITCODE -ne 0) { throw 'Publish failed.' }
 

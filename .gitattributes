@@ -1,0 +1,4 @@
+# Shell scripts run on Linux, where a carriage return breaks them.
+*.sh text eol=lf
+*.png binary
+*.ico binary

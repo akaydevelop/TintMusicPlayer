@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
+#if WINDOWS
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
+#endif
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -324,8 +326,10 @@ sealed class Library : IDisposable
             }
             if (data == null || data.Length == 0) return null;
 
+            var thumbnail = await Thumbnail(data, size);
+            if (thumbnail == null || thumbnail.Length == 0) return null;
             var tmp = file + "." + Environment.CurrentManagedThreadId + ".tmp";
-            WriteThumbnail(data, size, tmp);
+            await File.WriteAllBytesAsync(tmp, thumbnail);
             File.Move(tmp, file, overwrite: true);
             return file;
         }
@@ -339,7 +343,23 @@ sealed class Library : IDisposable
         }
     }
 
-    static void WriteThumbnail(byte[] data, int size, string destination)
+    /// <summary>
+    /// Makes a JPEG thumbnail. Elsewhere than Windows there is no GDI+ to draw it with; there the
+    /// host does it (the Chrome build has the browser draw it, see ChromeHost.Thumbnail).
+    /// </summary>
+    public Func<byte[], int, Task<byte[]?>>? Thumbnailer { get; set; }
+
+    Task<byte[]?> Thumbnail(byte[] data, int size)
+    {
+#if WINDOWS
+        return Task.FromResult<byte[]?>(DrawThumbnail(data, size));
+#else
+        return Thumbnailer?.Invoke(data, size) ?? Task.FromResult<byte[]?>(null);
+#endif
+    }
+
+#if WINDOWS
+    static byte[] DrawThumbnail(byte[] data, int size)
     {
         using var input = new MemoryStream(data);
         using var source = Image.FromStream(input);
@@ -360,8 +380,11 @@ sealed class Library : IDisposable
         var jpeg = ImageCodecInfo.GetImageEncoders().First(c => c.FormatID == ImageFormat.Jpeg.Guid);
         using var parameters = new EncoderParameters(1);
         parameters.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 88L);
-        bitmap.Save(destination, jpeg, parameters);
+        using var output = new MemoryStream();
+        bitmap.Save(output, jpeg, parameters);
+        return output.ToArray();
     }
+#endif
 
     // ---- watching ------------------------------------------------------------------------------
 

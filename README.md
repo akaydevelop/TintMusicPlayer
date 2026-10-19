@@ -1,6 +1,6 @@
 # Tint
 
-A small music player for Windows. It plays the music files on this PC and, once set up, your
+A small music player for Windows and Linux. It plays the music files on this PC and, once set up, your
 Apple Music library, the Apple Music catalog and YouTube Music's catalog. The whole window, title bar included, takes its
 colors from the cover of the song that is playing.
 
@@ -10,12 +10,34 @@ colors from the cover of the song that is playing.
     .\tools\publish.ps1 -Shortcut  # same, and adds a Start menu shortcut
     .\dist\Tint.exe
 
+A release download (`Tint-<version>-win-x64.zip`) holds the same `dist` folder.
 Needs Windows 11, the .NET 10 Desktop Runtime and the Edge WebView2 Runtime (part of Windows 11).
+
+### On Linux
+
+    tools/linux/install.sh                   # builds and installs for this user (needs the .NET 10 SDK)
+    tools/linux/install.sh --self-contained  # the same, bundling .NET so the runtime isn't needed
+    tools/linux/install.sh --uninstall
+
+A release download (`Tint-<version>-linux-x64.tar.gz`, or `-linux-arm64`) is already built and
+bundles .NET: unpack it and run its `install.sh`.
+
+Then start Tint from the app menu, or run `tint`. The window is an app window of Google Chrome,
+Microsoft Edge or Brave (whichever is installed; `TINT_BROWSER` picks one), with a profile of its
+own, so it never touches the browser you use. That browser is what plays Apple Music's full songs:
+they are protected with Widevine, which Chromium as most distributions package it lacks, so with
+Chromium alone Apple Music plays only previews. The media keys and the desktop's player controls
+(MPRIS: GNOME's and KDE's media widgets, `playerctl`) come from the browser too. File dialogs use
+zenity or kdialog when either is installed. Discord's desktop app, including the Flatpak and Snap
+packages, is found the same way as on Windows.
+
+On Linux the Apple Music key and token Tint keeps are not encrypted (there is nothing built in to
+match Windows' per-user encryption); `~/.local/share/Tint` is made readable by its owner alone.
 
 ## Music on this PC
 
-Tint scans `Music\iTunes\iTunes Media` and `Music\Apple Music\Media` by default; add or remove
-folders in Settings. It plays MP3, AAC/M4A, FLAC, WAV, Ogg and Opus, and picks up new files on
+Tint scans `Music\iTunes\iTunes Media` and `Music\Apple Music\Media` by default (on Linux, the
+whole `~/Music` folder); add or remove folders in Settings. It plays MP3, AAC/M4A, FLAC, WAV, Ogg and Opus, and picks up new files on
 its own.
 
 Two kinds of file are left out or greyed:
@@ -104,17 +126,26 @@ match is found the status goes out without one.
 
 ## How it is put together
 
-- `src\` is the Windows host: one WinForms window holding a WebView2, a loopback HTTP server
-  (`LocalServer.cs`) that serves the UI, the audio files and a small JSON API, the folder scanner
-  (`Library.cs`), the token signer (`AppleToken.cs`), the Discord status (`DiscordPresence.cs`,
-  with `CoverLookup.cs` finding public covers for local albums), and the Windows media controls
-  (`SystemMedia.cs` for the media keys and the system media panel, `TaskbarButtons.cs` for the
-  buttons under the taskbar preview).
+- `src\` holds what both builds share: a loopback HTTP server (`LocalServer.cs`) that serves the
+  UI, the audio files and a small JSON API, the folder scanner (`Library.cs`), the token signer
+  (`AppleToken.cs`), YouTube through yt-dlp (`YouTube.cs`, `YouTubeTokens.cs`) and the Discord
+  status (`DiscordPresence.cs`, with `CoverLookup.cs` finding public covers for local albums).
+  `Host.cs` is what the server needs from the window, whichever build it is.
+- `src\Windows\` is the Windows host: one WinForms window holding a WebView2 (`MainForm.cs`,
+  `PageBridge.cs`, `YouTubePage.cs`) and the Windows media controls (`SystemMedia.cs` for the media
+  keys and the system media panel, `TaskbarButtons.cs` for the buttons under the taskbar preview).
+- `src\Chrome\` is the Linux host: an installed Chrome-family browser, started with its own
+  profile and driven over the DevTools protocol on a private pipe (`Browser.cs`, `Cdp.cs`). It
+  answers the page's requests the way `PageBridge.cs` does (`ChromeHost.cs`), and
+  `wwwroot\js\host-bridge.js` gives the page WebView2's messaging, so the UI is the same code.
+  `Tint.csproj` builds `net10.0-windows` for the first and `net10.0` for this one.
 - `wwwroot\` is the UI in plain HTML, CSS and JavaScript modules. No framework, no build step.
   `player.js` owns the queue and drives two engines (an `<audio>` element for files and for
   YouTube songs, MusicKit for Apple Music); `palette.js` reads cover colors; `views.js` holds the
   pages; `youtube.js` reads YouTube Music's answers.
-- App data lives in `%LOCALAPPDATA%\Tint` (settings, library cache, cover thumbnails, browser profile).
+- App data lives in `%LOCALAPPDATA%\Tint` on Windows and `~/.local/share/Tint` on Linux (settings,
+  library cache, cover thumbnails, browser profile). `TINT_DATA` points it elsewhere, for trying a
+  build out without touching the settings of the copy in daily use.
 
 ## Working on it
 
@@ -123,6 +154,8 @@ match is found the status goes out without one.
     .\tools\shot.ps1                         # save a screenshot of the window
 
 In dev mode the UI is served straight from `wwwroot`, so edit and press F5. F12 opens DevTools.
+The Linux build runs on Windows too, for trying it out: `dotnet run -f net10.0 -- --dev` (with
+`TINT_DATA` set to a scratch folder), and `tools\eval.mjs` reaches its page the same way.
 `tools\check-token.mjs` verifies token signing with a throwaway key. `tools\probe-webtoken.mjs`
 reports where Apple's site currently keeps its web player token and what the API requires, which
 is the first thing to run if that route stops working.

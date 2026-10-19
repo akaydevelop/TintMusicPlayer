@@ -124,8 +124,17 @@ sealed class CoverLookup
         string? home = null;
         try
         {
-            int length = GetUserDefaultGeoName(buffer, buffer.Length);
-            if (length == 3) home = new string(buffer, 0, 2).ToUpperInvariant();
+            if (OperatingSystem.IsWindows())
+            {
+                int length = GetUserDefaultGeoName(buffer, buffer.Length);
+                if (length == 3) home = new string(buffer, 0, 2).ToUpperInvariant();
+            }
+            else
+            {
+                // Linux has no separate home-region setting; the locale's country (en_GB → GB) stands in for it.
+                home = System.Globalization.RegionInfo.CurrentRegion.TwoLetterISORegionName.ToUpperInvariant();
+                if (home.Length != 2) home = null;
+            }
         }
         catch { }
         if (home != null && home.All(char.IsAsciiLetter)) yield return home;

@@ -212,7 +212,9 @@ sealed partial class YouTubeTokens : IDisposable
 
     /// <summary>
     /// A Windows job that ends the processes in it when Tint goes away, however it goes away, so a
-    /// crash can't leave the token server running with nobody to use it.
+    /// crash can't leave the token server running with nobody to use it. Linux has no such thing for
+    /// another program's process; there the server is stopped on the way out and when idle, and a
+    /// crash can leave it running until it is next replaced.
     /// </summary>
     sealed class KillWithParent : IDisposable
     {
@@ -220,6 +222,7 @@ sealed partial class YouTubeTokens : IDisposable
 
         public KillWithParent()
         {
+            if (!OperatingSystem.IsWindows()) return;
             _job = CreateJobObject(IntPtr.Zero, null);
             var limits = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
             limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
@@ -228,10 +231,14 @@ sealed partial class YouTubeTokens : IDisposable
 
         public void Add(Process process)
         {
+            if (_job == IntPtr.Zero) return;
             try { AssignProcessToJobObject(_job, process.Handle); } catch { }
         }
 
-        public void Dispose() => CloseHandle(_job);
+        public void Dispose()
+        {
+            if (_job != IntPtr.Zero) CloseHandle(_job);
+        }
 
         const int JobObjectExtendedLimitInformation = 9;
         const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000;

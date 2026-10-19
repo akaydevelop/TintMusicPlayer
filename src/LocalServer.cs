@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Drawing;
 using System.Net;
 using System.Text;
 using System.Text.Json;
@@ -40,7 +41,7 @@ sealed class LocalServer : IDisposable
 
     public static string MimeFor(string path) => Mime.GetValueOrDefault(Path.GetExtension(path), "application/octet-stream");
 
-    readonly MainForm _form;
+    readonly IHost _host;
     readonly Settings _settings;
     readonly Library _library;
     readonly AppleToken _token;
@@ -52,10 +53,10 @@ sealed class LocalServer : IDisposable
     public int Port { get; private set; }
     public string Origin => $"http://127.0.0.1:{Port}";
 
-    public LocalServer(MainForm form, Settings settings, Library library, AppleToken token, DiscordPresence discord, YouTube youtube, string webRoot)
+    public LocalServer(IHost host, Settings settings, Library library, AppleToken token, DiscordPresence discord, YouTube youtube, string webRoot)
     {
         _youtube = youtube;
-        _form = form;
+        _host = host;
         _settings = settings;
         _library = library;
         _token = token;
@@ -264,11 +265,11 @@ sealed class LocalServer : IDisposable
                 return;
 
             case "pick-folder" when post:
-                await WriteJson(res, new { path = _form.OnUi(_form.PickFolder) });
+                await WriteJson(res, new { path = await _host.PickFolder() });
                 return;
 
             case "pick-key" when post:
-                await WriteJson(res, PickKey());
+                await WriteJson(res, await PickKey());
                 return;
 
             case "apple-token":
@@ -282,7 +283,7 @@ sealed class LocalServer : IDisposable
                 {
                     var bg = ParseColor(body?["bg"]?.GetValue<string>());
                     var fg = ParseColor(body?["fg"]?.GetValue<string>());
-                    if (bg != null && fg != null) _form.OnUi(() => _form.TintChrome(bg.Value, fg.Value, body?["instant"]?.GetValue<bool>() ?? false));
+                    if (bg != null && fg != null) _host.TintChrome(bg.Value, fg.Value, body?["instant"]?.GetValue<bool>() ?? false);
                     await WriteJson(res, new { ok = true });
                     return;
                 }
@@ -290,7 +291,7 @@ sealed class LocalServer : IDisposable
             case "mini" when post:
                 {
                     bool on = body?["on"]?.GetValue<bool>() ?? false;
-                    _form.OnUi(() => _form.SetMini(on));
+                    _host.SetMini(on);
                     await WriteJson(res, new { ok = true });
                     return;
                 }
@@ -329,11 +330,11 @@ sealed class LocalServer : IDisposable
                 return;
 
             case "youtube/signin" when post:
-                await WriteJson(res, new { ok = await _form.OnUi(_form.YouTubeSignIn) });
+                await WriteJson(res, new { ok = await _host.YouTubeSignIn() });
                 return;
 
             case "youtube/signout" when post:
-                await _form.OnUi(_form.YouTubeSignOut);
+                await _host.YouTubeSignOut();
                 await WriteJson(res, new { ok = true });
                 return;
 
@@ -342,7 +343,7 @@ sealed class LocalServer : IDisposable
                     bool again = body?["again"]?.GetValue<bool>() ?? false;
                     // The site plays at the quality set in the account, so that is put to High first.
                     await _youtube.PreferHighQuality();
-                    await WriteJson(res, new { ok = await _form.OnUi(() => _form.OpenYouTubePage(again)) });
+                    await WriteJson(res, new { ok = await _host.OpenYouTubePage(again) });
                     return;
                 }
 
@@ -373,7 +374,7 @@ sealed class LocalServer : IDisposable
                     var track = await ReadSystemTrack(body);
                     bool playing = body?["playing"]?.GetValue<bool>() ?? false;
                     long at = body?["at"]?.GetValue<long>() ?? 0;
-                    _form.OnUi(() => _form.ShowNowPlaying(track, playing, at));
+                    _host.ShowNowPlaying(track, playing, at);
                     await WriteJson(res, new { ok = true });
                     return;
                 }
@@ -383,9 +384,11 @@ sealed class LocalServer : IDisposable
                 await WriteJson(res, new { ok = await _youtube.SetQuality(int.Parse(req.QueryString["level"] ?? "3")) });
                 return;
 
-            case "debug/taskbar":
-                await WriteJson(res, new { attached = _form.OnUi(() => _form.TaskbarButtonsAttached) });
+#if WINDOWS
+            case "debug/taskbar" when _host is MainForm form:
+                await WriteJson(res, new { attached = form.OnUi(() => form.TaskbarButtonsAttached) });
                 return;
+#endif
 
             case "debug/cover":
                 await WriteJson(res, new { url = await _discord.FindCover(req.QueryString["artist"] ?? "", req.QueryString["album"] ?? "") });
@@ -461,7 +464,7 @@ sealed class LocalServer : IDisposable
             DateTimeOffset.UtcNow);
     }
 
-    /// <summary>The current song for Windows' media controls, or null when the queue is empty.</summary>
+    /// <summary>The current song for the system's media controls, or null when the queue is empty.</summary>
     async Task<SystemTrack?> ReadSystemTrack(JsonNode? body)
     {
         if (body is not JsonObject o) return null;
@@ -542,9 +545,9 @@ sealed class LocalServer : IDisposable
         if (discordChanged) _discord.Reconfigure();
     }
 
-    object PickKey()
+    async Task<object> PickKey()
     {
-        var file = _form.OnUi(_form.PickKeyFile);
+        var file = await _host.PickKeyFile();
         if (file == null) return new { ok = false, cancelled = true };
         try
         {
