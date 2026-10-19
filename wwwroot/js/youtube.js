@@ -6,9 +6,41 @@
 import { get, post } from './api.js';
 import { prefs } from './prefs.js';
 import { bestMatch } from './match.js';
+import { shareLink, toast } from './ui.js';
+import { englishTitle } from './apple.js';
 
 /** The address that opens a song on YouTube Music, for sharing it. Null for a song that isn't playing from there. */
 export const songLink = (track) => track?.youtubeId ? `https://music.youtube.com/watch?v=${encodeURIComponent(track.youtubeId)}` : null;
+
+// Songs from Apple Music or this PC, and the YouTube Music link found for each (null: no match).
+const linksFound = new Map();
+
+/** A link to `track` on YouTube Music: its own, or else the same recording's, looked up by name. */
+export function linkFor(track) {
+  const own = songLink(track);
+  if (own || !track?.title) return Promise.resolve(own);
+  if (!linksFound.has(track.id)) {
+    const lookup = (async () => {
+      const found = await findSong(track);
+      if (found) return songLink(found);
+      // A Japanese title often turns up on YouTube Music only under its English name.
+      const english = await englishTitle(track);
+      return english ? songLink(await findSong({ ...track, title: english })) : null;
+    })();
+    // A failed lookup (offline, YouTube busy) is tried again next time; a song not found isn't.
+    lookup.catch(() => linksFound.delete(track.id));
+    linksFound.set(track.id, lookup);
+  }
+  return linksFound.get(track.id);
+}
+
+/** Copies the song's YouTube Music link, whichever service it plays from. */
+export async function share(track) {
+  let link;
+  try { link = await linkFor(track); } catch { return toast("YouTube Music didn't answer, so there's no link yet. Try again in a moment."); }
+  if (!link) return toast("This song wasn't found on YouTube Music, so there's no link to share.");
+  await shareLink(link);
+}
 
 let status = null; // what the host found: { tool, version, runtime, deno, signedIn, tokens }
 const listeners = new Set();

@@ -5,8 +5,8 @@ import * as player from './player.js';
 import { englishTitle } from './apple.js';
 import { prefs, onChange as onPrefs } from './prefs.js';
 import { post } from './api.js';
-import { $, h, icon, fmtTime, artSrc, cover, toast, replay, showMenu, shareLink } from './ui.js';
-import { songLink } from './youtube.js';
+import { $, h, icon, fmtTime, artSrc, cover, toast, replay, showMenu } from './ui.js';
+import { linkFor, share } from './youtube.js';
 import { paletteOf, themeFrom, applyTheme, IDLE_THEME } from './palette.js';
 
 const QUEUE_ROWS = 80;
@@ -43,7 +43,12 @@ export function initDeck() {
   els['b-shuffle'].innerHTML = icon('shuffle');
   els['b-expand'].innerHTML = icon('expand');
   els['b-share'].innerHTML = icon('share');
-  els['b-share'].addEventListener('click', () => { const link = songLink(player.current()); if (link) shareLink(link); });
+  // A song from Apple Music or this PC is looked up on YouTube Music when the pointer comes near,
+  // so the link is usually there by the click (the clipboard only takes it soon after one).
+  const lookAhead = () => { const track = player.current(); if (track) linkFor(track).catch(() => {}); };
+  els['b-share'].addEventListener('pointerenter', lookAhead);
+  els['b-share'].addEventListener('focus', lookAhead);
+  els['b-share'].addEventListener('click', () => { const track = player.current(); if (track) share(track); });
 
   els['b-play'].addEventListener('click', player.toggle);
   els['b-prev'].addEventListener('click', player.prev);
@@ -52,13 +57,14 @@ export function initDeck() {
   els['b-repeat'].addEventListener('click', player.cycleRepeat);
   els['b-clear'].addEventListener('click', player.clearUpcoming);
   els['b-expand'].addEventListener('click', () => post('/api/mini', { on: false }).catch(() => {}));
-  // Right-clicking the song playing offers its link, when it is playing from YouTube Music.
+  // Right-clicking the song playing offers its YouTube Music link too.
   for (const part of [els['deck-art'], els['deck-title'].closest('.deck-meta')]) {
     part.addEventListener('contextmenu', (e) => {
-      const link = songLink(player.current());
-      if (!link) return;
+      const track = player.current();
+      if (!track) return;
       e.preventDefault();
-      showMenu(e.clientX, e.clientY, [{ label: 'Share YouTube Music link', run: () => shareLink(link) }]);
+      linkFor(track).catch(() => {});
+      showMenu(e.clientX, e.clientY, [{ label: 'Share YouTube Music link', run: () => share(track) }]);
     });
   }
   els['b-mute'].addEventListener('click', () => player.setVolume(player.state.volume || 0.5, { muted: !player.state.muted }));
@@ -126,7 +132,7 @@ function drawTrack() {
   els['deck-title'].textContent = track ? track.title : 'Nothing playing';
   els['deck-artist'].textContent = track ? track.artist : 'Choose an album or a song to start.';
   els['deck-title'].title = track ? track.title : '';
-  els['b-share'].hidden = !songLink(track);
+  els['b-share'].hidden = !track;
   const secondary = els['deck-title-english'];
   secondary.textContent = '';
   secondary.hidden = true;

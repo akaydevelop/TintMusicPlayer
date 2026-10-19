@@ -28,12 +28,23 @@ function sameArtist(a, b) {
   return names(a).some((name) => theirs.includes(name)) ? 0.6 : 0;
 }
 
+// Words that mark another version of a song. plain() drops brackets, where these usually sit, so
+// "Song (Instrumental)" would pass for "Song"; a version only matches the same kind of version.
+const VERSIONS = /\b(instrumental|inst\b\.?|off ?vocal|karaoke|remix|mix|live|acoustic|sped ?up|slowed|nightcore|cover|tv ?size|short ?ver(sion)?|demo)\b/gi;
+
+function versionOf(title) {
+  const words = ((title || '').toLowerCase().match(VERSIONS) || [])
+    .map((word) => word.replace(/[\s.]/g, ''))
+    .map((word) => (word === 'inst' ? 'instrumental' : word));
+  return [...new Set(words)].sort().join(' ');
+}
+
 /** The entry of `candidates` that is the same recording as `wanted`, or null when none is convincing. */
 export function bestMatch(wanted, candidates) {
   let best = null, bestScore = 0;
   for (const song of candidates) {
     const title = alike(wanted.title, song.title);
-    if (!title) continue;
+    if (!title || versionOf(wanted.title) !== versionOf(song.title)) continue;
     const artist = sameArtist(wanted.artist, song.artist);
     const apart = wanted.duration && song.duration ? Math.abs(wanted.duration - song.duration) : null;
     // A live take, a remix or a karaoke track shares the title but runs to a different length.
