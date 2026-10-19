@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json.Nodes;
 
 namespace Tint;
 
@@ -82,7 +83,91 @@ static class Browser
             arguments.Add($"--window-size={placement.Width},{placement.Height}");
             arguments.Add($"--window-position={placement.Left},{placement.Top}");
         }
+        return await Connect(browser, arguments, dev);
+    }
 
+    /// <summary>
+    /// Opens a page in an app window of a browser of its own, with no DevTools connection at all.
+    /// Google refuses to sign in to a browser that another program drives ("This browser or app
+    /// may not be secure"), so its sign-in happens here, in a profile kept for that alone, and
+    /// <see cref="ReadCookies"/> collects the result once the window is closed.
+    /// </summary>
+    public static Process StartUnwatched(string browser, string profile, string page, int width, int height)
+    {
+        Directory.CreateDirectory(profile);
+        var start = new ProcessStartInfo(browser) { UseShellExecute = false };
+        foreach (var argument in new[]
+        {
+            "--user-data-dir=" + profile,
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-default-apps",
+            "--disable-sync",
+            SignInPasswords,
+            "--class=Tint",
+            $"--window-size={width},{height}",
+            "--app=" + page,
+        }) start.ArgumentList.Add(argument);
+        if (!OperatingSystem.IsWindows())
+        {
+            start.RedirectStandardError = true;
+            start.RedirectStandardOutput = true;
+        }
+        var process = Process.Start(start) ?? throw new InvalidOperationException("The browser wouldn't start.");
+        if (!OperatingSystem.IsWindows())
+        {
+            // Its chatter goes nowhere.
+            _ = process.StandardError.BaseStream.CopyToAsync(Stream.Null);
+            _ = process.StandardOutput.BaseStream.CopyToAsync(Stream.Null);
+        }
+        return process;
+    }
+
+    /// <summary>
+    /// On Linux a profile's cookies are encrypted with a key from the desktop's keyring, which a
+    /// browser started without a window may not reach. The sign-in profile does without the
+    /// keyring both times, so the copy that reads its cookies can decrypt them. It lives only as
+    /// long as the sign-in does.
+    /// </summary>
+    const string SignInPasswords = "--password-store=basic";
+
+    /// <summary>Every cookie of a profile no browser has open, read by a windowless browser started for the purpose.</summary>
+    public static async Task<List<JsonObject>> ReadCookies(string browser, string profile)
+    {
+        var (process, cdp) = await Connect(browser,
+        [
+            "--user-data-dir=" + profile,
+            "--headless=new",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-sync",
+            SignInPasswords,
+            "about:blank",
+        ], dev: false);
+        try
+        {
+            var all = await cdp.Send("Storage.getCookies");
+            return (all["cookies"] as JsonArray ?? []).OfType<JsonObject>().ToList();
+        }
+        finally
+        {
+            try { await cdp.Send("Browser.close", null, null, TimeSpan.FromSeconds(3)); } catch { }
+            await cdp.DisposeAsync();
+            try
+            {
+                using var patience = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                await process.WaitForExitAsync(patience.Token);
+            }
+            catch
+            {
+                try { process.Kill(entireProcessTree: true); } catch { }
+            }
+            process.Dispose();
+        }
+    }
+
+    static async Task<(Process Process, Cdp Cdp)> Connect(string browser, List<string> arguments, bool dev)
+    {
         if (OperatingSystem.IsWindows())
         {
             // A port of the system's choosing, unless dev mode wants the fixed one tools\eval.mjs knows.

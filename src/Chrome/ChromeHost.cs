@@ -41,6 +41,7 @@ sealed class ChromeHost : IHost
     readonly TaskCompletionSource _closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     Process? _browser;
+    string? _browserPath;
     Cdp? _cdp;
     string? _mainTarget, _main;
     int _windowId;
@@ -58,10 +59,9 @@ sealed class ChromeHost : IHost
     Task<bool>? _youtubeOpening;
     TaskCompletionSource<bool>? _youtubeReady;
 
-    // Google's sign-in window.
-    string? _signInTarget;
-    TaskCompletionSource<bool>? _signInDone;
-    int _signInCapturing;
+    // Google's sign-in, under way.
+    readonly object _signInLock = new();
+    Task<bool>? _signingIn;
 
     public LocalServer? Server { get; set; }
 
@@ -88,6 +88,7 @@ sealed class ChromeHost : IHost
 
         // The first thing shown is only a backdrop in the player's colours, while the page itself loads.
         const string Backdrop = "data:text/html,%3Ctitle%3ETint%3C/title%3E%3Cbody%20style=%22background:%2314262b%22%3E";
+        _browserPath = browser;
         (_browser, _cdp) = await Browser.Start(browser, Backdrop, Placement(), _dev);
         Cdp.Event += OnEvent;
 
@@ -196,16 +197,6 @@ sealed class ChromeHost : IHost
                 var detached = p["sessionId"]?.GetValue<string>();
                 if (target == _mainTarget || (detached != null && detached == _main)) _closed.TrySetResult();
                 else if (target == _youtubeTarget || (detached != null && detached == _youtubeSession)) ForgetYouTube();
-                else if (target != null && target == _signInTarget)
-                {
-                    _signInTarget = null;
-                    _signInDone?.TrySetResult(false);
-                }
-                break;
-
-            case "Target.targetInfoChanged":
-                if (p["targetInfo"] is JsonObject info && info["targetId"]?.GetValue<string>() is { } changed && changed == _signInTarget)
-                    _ = Task.Run(() => SignInMoved(info["url"]?.GetValue<string>()));
                 break;
 
             case "Inspector.targetCrashed":
@@ -481,51 +472,79 @@ sealed class ChromeHost : IHost
 
     // ---- Google's sign-in ------------------------------------------------------------------------
 
-    public async Task<bool> YouTubeSignIn()
+    /// <summary>
+    /// Google won't sign in to a browser driven over DevTools, which Tint's window is. So the sign-in
+    /// gets a browser of its own, untouched by Tint: a separate profile in an app window. Once the
+    /// person closes that window, its cookies are read out, copied into Tint's profile (for the
+    /// hidden YouTube Music page) and to yt-dlp's keeping, and the separate profile is deleted.
+    /// </summary>
+    public Task<bool> YouTubeSignIn()
     {
-        if (_signInTarget is { } open && _signInDone is { } pending)
-        {
-            try { await Cdp.Send("Target.activateTarget", new JsonObject { ["targetId"] = open }); } catch (CdpException) { }
-            return await pending.Task;
-        }
-
-        var done = _signInDone = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _signInCapturing = 0;
-        var made = await Cdp.Send("Target.createTarget", new JsonObject
-        {
-            ["url"] = GoogleSignIn,
-            ["newWindow"] = true,
-            ["width"] = 520,
-            ["height"] = 720,
-        });
-        _signInTarget = made["targetId"]!.GetValue<string>();
-        return await done.Task;
+        lock (_signInLock) return _signingIn is { IsCompleted: false } pending ? pending : _signingIn = SignIn();
     }
 
-    /// <summary>Once the sign-in lands on YouTube Music signed in, its cookies go to yt-dlp's keeping and the window closes.</summary>
-    async Task SignInMoved(string? address)
+    async Task<bool> SignIn()
     {
-        if (!Uri.TryCreate(address, UriKind.Absolute, out var at) || !at.Host.Equals("music.youtube.com", StringComparison.OrdinalIgnoreCase)) return;
-        if (Interlocked.Exchange(ref _signInCapturing, 1) == 1) return;
+        var browser = _browserPath ?? throw new InvalidOperationException("The browser isn't running.");
+        Forget(Paths.SignInData);
         try
         {
-            // The site sets the last of its cookies as it loads.
-            for (int tries = 0; tries < 10; tries++)
+            using (var window = Browser.StartUnwatched(browser, Paths.SignInData, GoogleSignIn, 520, 720))
             {
-                if (await SaveYouTubeCookies())
+                await Task.WhenAny(window.WaitForExitAsync(), _closed.Task);
+                if (!window.HasExited)
                 {
-                    _signInDone?.TrySetResult(true);
-                    if (_signInTarget is { } target) await Cdp.Send("Target.closeTarget", new JsonObject { ["targetId"] = target });
-                    return;
+                    // Tint is closing.
+                    try { window.Kill(entireProcessTree: true); } catch { }
+                    return false;
                 }
-                await Task.Delay(500);
             }
+
+            var cookies = await Browser.ReadCookies(browser, Paths.SignInData);
+            if (!cookies.Any(c => Text(c, "name") is "SAPISID" or "__Secure-3PAPISID")) return false;
+            foreach (var cookie in cookies)
+            {
+                // One at a time: the browser turns down a whole batch for one cookie it won't take.
+                try { await Cdp.Send("Storage.setCookies", new JsonObject { ["cookies"] = new JsonArray(CookieToSet(cookie)) }); }
+                catch (CdpException) { }
+            }
+            if (!await SaveYouTubeCookies()) return false;
+            // An open YouTube Music page picks the sign-in up on a fresh load.
+            if (_youtubeSession != null) _ = OpenYouTubePage(again: true);
+            return true;
         }
-        catch (CdpException) { }
         finally
         {
-            Interlocked.Exchange(ref _signInCapturing, 0);
+            Forget(Paths.SignInData);
         }
+
+        static void Forget(string folder)
+        {
+            try { if (Directory.Exists(folder)) Directory.Delete(folder, recursive: true); } catch { }
+        }
+    }
+
+    /// <summary>A cookie as Storage.getCookies reports it, put the way Storage.setCookies takes it.</summary>
+    static JsonObject CookieToSet(JsonObject c)
+    {
+        var set = new JsonObject
+        {
+            ["name"] = Text(c, "name"),
+            ["value"] = Text(c, "value"),
+            ["path"] = Text(c, "path"),
+            ["secure"] = c["secure"]?.GetValue<bool>() ?? false,
+            ["httpOnly"] = c["httpOnly"]?.GetValue<bool>() ?? false,
+        };
+        // A cookie for a whole domain is set by domain; one for a single host (all __Host- cookies)
+        // by an address on that host, as naming a domain would widen it.
+        var domain = Text(c, "domain");
+        if (domain.StartsWith('.')) set["domain"] = domain;
+        else set["url"] = "https://" + domain + Text(c, "path");
+        if (c["session"]?.GetValue<bool>() != true && c["expires"] is { } expires) set["expires"] = expires.GetValue<double>();
+        foreach (var key in new[] { "sameSite", "priority", "sourceScheme" })
+            if (c[key] is { } value) set[key] = value.GetValue<string>();
+        if (c["sourcePort"] is { } port) set["sourcePort"] = port.GetValue<int>();
+        return set;
     }
 
     /// <summary>Copies YouTube's cookies from the browser to yt-dlp's keeping. False when the browser isn't signed in.</summary>

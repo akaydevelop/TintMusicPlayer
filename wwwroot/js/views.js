@@ -944,6 +944,11 @@ function settingsView() {
       : [
         h('p', {}, 'Sign in with the Google account that has YouTube Premium. Tint keeps a copy of that sign-in (YouTube\'s part of it only) in a file in its data folder, and yt-dlp asks YouTube as you.'),
         h('p', { class: 'warn' }, "yt-dlp's makers warn that YouTube can restrict or close an account that is used this way."),
+        // In the browser-hosted build the sign-in window is a browser Tint can't see into, so it
+        // waits for the window to be closed.
+        working === 'signin' && window.tintBrowserHost
+          ? h('p', {}, 'Sign in in the window that opened. When YouTube Music shows there, close that window and Tint takes the sign-in from it.')
+          : null,
         h('div', { class: 'panel-actions' },
           h('button', {
             class: 'btn primary', disabled: !!working,

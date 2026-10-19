@@ -30,6 +30,8 @@ static class Paths
     public static readonly string WebViewData = Path.Combine(Data, "WebView2");
     /// <summary>The browser profile of the Chrome-hosted build: its own, never the person's everyday one.</summary>
     public static readonly string BrowserData = Path.Combine(Data, "browser");
+    /// <summary>A second profile, only for Google's sign-in, which Google refuses in a browser Tint drives. Deleted once the sign-in is copied out.</summary>
+    public static readonly string SignInData = Path.Combine(Data, "google-signin");
     public static readonly string SettingsFile = Path.Combine(Data, "settings.json");
     public static readonly string LibraryFile = Path.Combine(Data, "library.json");
 
