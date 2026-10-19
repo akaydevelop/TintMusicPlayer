@@ -7,6 +7,9 @@ import { get, post } from './api.js';
 import { prefs } from './prefs.js';
 import { bestMatch } from './match.js';
 
+/** The address that opens a song on YouTube Music, for sharing it. Null for a song that isn't playing from there. */
+export const songLink = (track) => track?.youtubeId ? `https://music.youtube.com/watch?v=${encodeURIComponent(track.youtubeId)}` : null;
+
 let status = null; // what the host found: { tool, version, runtime, deno, signedIn, tokens }
 const listeners = new Set();
 

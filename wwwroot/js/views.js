@@ -2,7 +2,7 @@
 // `refresh` is called when the data behind the page changes (a scan finished, more of the Apple
 // Music library arrived, a different song started).
 
-import { h, fill, cover, fmtTime, fmtLength, plural, showMenu, toast, replay, VirtualList } from './ui.js';
+import { h, fill, cover, fmtTime, fmtLength, plural, showMenu, shareLink, toast, replay, VirtualList } from './ui.js';
 import * as player from './player.js';
 import * as apple from './apple.js';
 import * as youtube from './youtube.js';
@@ -69,6 +69,7 @@ function trackMenu(x, y, track) {
     { label: 'Play next', run: () => { player.playNext([track]); toast(`"${track.title}" plays next`); } },
     { label: 'Add to queue', run: () => { player.addToQueue([track]); toast(`Added "${track.title}" to the queue`); } },
     track.albumHref && { label: 'Go to album', run: () => { location.hash = track.albumHref; } },
+    youtube.songLink(track) && { label: 'Share YouTube Music link', run: () => shareLink(youtube.songLink(track)) },
   ]);
 }
 

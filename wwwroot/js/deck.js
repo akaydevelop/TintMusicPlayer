@@ -5,7 +5,8 @@ import * as player from './player.js';
 import { englishTitle } from './apple.js';
 import { prefs, onChange as onPrefs } from './prefs.js';
 import { post } from './api.js';
-import { $, h, icon, fmtTime, artSrc, cover, toast, replay } from './ui.js';
+import { $, h, icon, fmtTime, artSrc, cover, toast, replay, showMenu, shareLink } from './ui.js';
+import { songLink } from './youtube.js';
 import { paletteOf, themeFrom, applyTheme, IDLE_THEME } from './palette.js';
 
 const QUEUE_ROWS = 80;
@@ -49,6 +50,15 @@ export function initDeck() {
   els['b-repeat'].addEventListener('click', player.cycleRepeat);
   els['b-clear'].addEventListener('click', player.clearUpcoming);
   els['b-expand'].addEventListener('click', () => post('/api/mini', { on: false }).catch(() => {}));
+  // Right-clicking the song playing offers its link, when it is playing from YouTube Music.
+  for (const part of [els['deck-art'], els['deck-title'].closest('.deck-meta')]) {
+    part.addEventListener('contextmenu', (e) => {
+      const link = songLink(player.current());
+      if (!link) return;
+      e.preventDefault();
+      showMenu(e.clientX, e.clientY, [{ label: 'Share YouTube Music link', run: () => shareLink(link) }]);
+    });
+  }
   els['b-mute'].addEventListener('click', () => player.setVolume(player.state.volume || 0.5, { muted: !player.state.muted }));
 
   const seek = els.seek;

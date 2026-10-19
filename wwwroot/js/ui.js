@@ -137,6 +137,24 @@ export function toast(message, { ms = 3200 } = {}) {
   }, ms);
 }
 
+// ---- sharing ------------------------------------------------------------------------------------
+
+/** Puts a song's link on the clipboard, to paste into a chat or anywhere else. */
+export async function shareLink(link) {
+  try {
+    await navigator.clipboard.writeText(link);
+  } catch {
+    // The clipboard API can be refused; the old way still copies from a click.
+    const box = h('textarea', { value: link, readOnly: true, style: { position: 'fixed', opacity: '0' } });
+    document.body.append(box);
+    box.select();
+    const copied = document.execCommand('copy');
+    box.remove();
+    if (!copied) return toast("The link couldn't be copied.");
+  }
+  toast('Link copied. Paste it wherever you want to share the song.');
+}
+
 // ---- menu ---------------------------------------------------------------------------------------
 
 let openMenu = null;
