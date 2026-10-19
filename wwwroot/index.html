@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en" data-mode="dark">
+<head>
+  <meta charset="utf-8">
+  <title>Tint</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <link rel="icon" href="icon.png">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <div id="app">
+
+    <aside id="deck" aria-label="Now playing">
+      <div class="deck-top">
+        <div class="deck-art" id="deck-art">
+          <svg class="sleeve-empty" viewBox="0 0 100 100" aria-hidden="true">
+            <circle cx="50" cy="50" r="30" /><circle cx="50" cy="50" r="5" />
+          </svg>
+        </div>
+
+        <div class="deck-meta">
+          <h1 id="deck-title">Nothing playing</h1>
+          <p id="deck-title-english" lang="en" hidden></p>
+          <div class="deck-by">
+            <span id="deck-source" class="source-icon" role="img" hidden></span>
+            <p id="deck-artist">Choose an album or a song to start.</p>
+          </div>
+        </div>
+
+        <div class="scrub">
+          <input type="range" id="seek" class="slider" min="0" max="1000" value="0" step="1" aria-label="Position in song" disabled>
+          <div class="times"><span id="t-now">0:00</span><span id="t-format"></span><span id="t-left">0:00</span></div>
+        </div>
+
+        <div class="transport">
+          <button id="b-shuffle" class="icon-btn toggle" aria-label="Shuffle" aria-pressed="false" title="Shuffle"></button>
+          <button id="b-prev" class="icon-btn" aria-label="Previous song" title="Previous"></button>
+          <button id="b-play" class="play-btn" aria-label="Play" title="Play"></button>
+          <button id="b-next" class="icon-btn" aria-label="Next song" title="Next"></button>
+          <button id="b-repeat" class="icon-btn toggle" aria-label="Repeat" aria-pressed="false" title="Repeat"></button>
+        </div>
+
+        <div class="volume">
+          <button id="b-mute" class="icon-btn small" aria-label="Mute" title="Mute"></button>
+          <input type="range" id="vol" class="slider" min="0" max="100" value="80" step="1" aria-label="Volume">
+          <button id="b-expand" class="icon-btn small only-mini" aria-label="Open library" title="Open library"></button>
+        </div>
+      </div>
+
+      <section class="upnext" aria-label="Up next">
+        <header>
+          <h2>Up next</h2>
+          <button id="b-clear" class="text-btn" hidden>Clear</button>
+        </header>
+        <ol id="queue"></ol>
+        <p id="queue-empty" class="quiet">Songs you line up will show here.</p>
+      </section>
+    </aside>
+
+    <main id="browse">
+      <header id="bar">
+        <button id="b-back" class="icon-btn" aria-label="Back" title="Back"></button>
+        <nav id="tabs" aria-label="Library">
+          <a href="#/albums">Albums</a>
+          <a href="#/songs">Songs</a>
+          <a href="#/playlists">Playlists</a>
+          <a href="#/home" id="tab-home" hidden>Listen now</a>
+        </nav>
+        <label class="search">
+          <span class="search-icon" id="search-icon"></span>
+          <input id="q" type="search" placeholder="Search" autocomplete="off" spellcheck="false" aria-label="Search your music">
+        </label>
+        <button id="b-mini" class="icon-btn" aria-label="Mini player" title="Mini player"></button>
+        <a href="#/settings" id="b-settings" class="icon-btn" aria-label="Settings" title="Settings"></a>
+      </header>
+      <div id="scroller" tabindex="-1">
+        <div id="view"></div>
+      </div>
+    </main>
+
+  </div>
+
+  <div id="toasts" aria-live="polite"></div>
+  <audio id="audio" preload="auto"></audio>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
