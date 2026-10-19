@@ -22,6 +22,10 @@ Needs Windows 11, the .NET 10 Desktop Runtime and the Edge WebView2 Runtime (par
 A release download (`Tint-<version>-linux-x64.tar.gz`, or `-linux-arm64`) is already built and
 bundles .NET: unpack it and run its `install.sh`.
 
+To remove Tint later, run `~/.local/opt/tint/uninstall.sh`, which `install.sh` leaves next to the
+program. It keeps the settings and library in `~/.local/share/Tint`; `--all` deletes those too,
+with the sign-ins.
+
 Then start Tint from the app menu, or run `tint`. The window is an app window of Google Chrome,
 Microsoft Edge or Brave (whichever is installed; `TINT_BROWSER` picks one), with a profile of its
 own, so it never touches the browser you use. That browser is what plays Apple Music's full songs:

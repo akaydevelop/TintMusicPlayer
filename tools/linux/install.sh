@@ -5,14 +5,12 @@
 # In a release download the program is already built and sits next to this script; it is copied
 # as it is, and neither the .NET SDK nor --self-contained comes into it.
 #
-# In a release download the program is already built and sits next to this script; it is copied
-# as it is, and neither the SDK nor --self-contained comes into it.
-#
 #   tools/linux/install.sh                   build and install (needs the .NET 10 SDK)
 #   tools/linux/install.sh --self-contained  the same, but bundles .NET, so the computer it runs on
 #                                            needs no .NET runtime (about 70 MB instead of 2)
 #   tools/linux/install.sh --uninstall       removes the program, the command and the menu entry
-#                                            (settings and library in ~/.local/share/Tint are kept)
+#                                            (settings and library in ~/.local/share/Tint are kept);
+#                                            the same as ~/.local/opt/tint/uninstall.sh, see there
 #
 # Tint shows its window in Google Chrome, Microsoft Edge or Brave, whichever is installed. One of
 # them is needed for Apple Music's full songs (Chromium, as most distributions ship it, plays only
@@ -26,11 +24,8 @@ menu="$HOME/.local/share/applications"
 icons="$HOME/.local/share/icons/hicolor/256x256/apps"
 
 if [ "${1:-}" = "--uninstall" ]; then
-    rm -rf "$app"
-    rm -f "$bin/tint" "$menu/tint.desktop" "$icons/tint.png"
-    command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$menu" || true
-    echo "Tint removed. Its settings and library are still in ~/.local/share/Tint."
-    exit 0
+    shift
+    exec sh "$here/uninstall.sh" "$@"
 fi
 
 if [ -x "$here/Tint" ]; then
@@ -59,6 +54,10 @@ else
     icon="$root/assets/tint.png"
 fi
 
+# Kept with the program, so it can be removed once the download is gone.
+cp "$here/uninstall.sh" "$app/uninstall.sh"
+chmod +x "$app/uninstall.sh"
+
 mkdir -p "$bin" "$menu" "$icons"
 ln -sf "$app/Tint" "$bin/tint"
 cp "$icon" "$icons/tint.png"
@@ -77,6 +76,7 @@ EOF
 command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$menu" || true
 
 echo "Installed. Start Tint from the app menu, or run: tint"
+echo "To remove it later: $app/uninstall.sh (add --all to delete its settings and sign-ins too)"
 
 browser=""
 for name in google-chrome-stable google-chrome microsoft-edge-stable microsoft-edge brave-browser brave vivaldi-stable vivaldi chromium chromium-browser; do
