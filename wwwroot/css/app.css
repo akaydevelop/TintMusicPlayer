@@ -225,6 +225,8 @@ input, textarea, select { font: inherit; color: inherit; }
 }
 .deck-by { display: flex; align-items: center; gap: 6px; margin-top: 3px; min-width: 0; color: var(--dim); }
 #deck-title-english { margin: 5px 0 0; color: var(--dim); font: 400 13px/1.4 var(--text); overflow-wrap: anywhere; }
+#b-share { flex: none; margin: -4px -4px -4px auto; color: var(--dim); }
+#b-share[hidden] { display: none; }
 #deck-artist { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .source-icon { display: grid; flex: none; }
 .source-icon svg { width: 16px; height: 16px; }

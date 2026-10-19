@@ -36,12 +36,14 @@ let volumeByHand = false;
 
 export function initDeck() {
   for (const id of ['deck-art', 'deck-title', 'deck-title-english', 'deck-source', 'deck-artist', 'seek', 't-now', 't-format', 't-left', 'b-shuffle', 'b-prev', 'b-play',
-    'b-next', 'b-repeat', 'b-mute', 'vol', 'b-expand', 'b-clear', 'queue', 'queue-empty']) els[id] = $(id);
+    'b-next', 'b-repeat', 'b-mute', 'vol', 'b-expand', 'b-clear', 'queue', 'queue-empty', 'b-share']) els[id] = $(id);
 
   els['b-prev'].innerHTML = icon('prev');
   els['b-next'].innerHTML = icon('next');
   els['b-shuffle'].innerHTML = icon('shuffle');
   els['b-expand'].innerHTML = icon('expand');
+  els['b-share'].innerHTML = icon('share');
+  els['b-share'].addEventListener('click', () => { const link = songLink(player.current()); if (link) shareLink(link); });
 
   els['b-play'].addEventListener('click', player.toggle);
   els['b-prev'].addEventListener('click', player.prev);
@@ -124,6 +126,7 @@ function drawTrack() {
   els['deck-title'].textContent = track ? track.title : 'Nothing playing';
   els['deck-artist'].textContent = track ? track.artist : 'Choose an album or a song to start.';
   els['deck-title'].title = track ? track.title : '';
+  els['b-share'].hidden = !songLink(track);
   const secondary = els['deck-title-english'];
   secondary.textContent = '';
   secondary.hidden = true;

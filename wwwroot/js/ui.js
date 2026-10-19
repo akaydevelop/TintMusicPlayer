@@ -47,6 +47,7 @@ const ICONS = {
   close: `<g ${STROKE}><path d="m6.5 6.5 11 11"/><path d="m17.5 6.5-11 11"/></g>`,
   mini: `<g ${STROKE}><rect x="3.5" y="5" width="17" height="14" rx="2.5"/></g><rect x="11.5" y="11.5" width="6.5" height="5" rx="1.2"/>`,
   expand: `<g ${STROKE}><path d="M9.5 4.5h-5v5"/><path d="M4.5 4.5 10 10"/><path d="M14.5 19.5h5v-5"/><path d="M19.5 19.5 14 14"/></g>`,
+  share: `<g ${STROKE}><path d="M12 14.5V4"/><path d="m8 7.5 4-4 4 4"/><path d="M8 10.5H6.5a1.5 1.5 0 0 0-1.5 1.5v6.5a1.5 1.5 0 0 0 1.5 1.5h11a1.5 1.5 0 0 0 1.5-1.5V12a1.5 1.5 0 0 0-1.5-1.5H16"/></g>`,
   folder: `<g ${STROKE}><path d="M3.5 7.5a2 2 0 0 1 2-2h3.6l2 2.2h7.4a2 2 0 0 1 2 2v7.8a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></g>`,
   note: `<g ${STROKE}><path d="M9.5 17.5V6l9-2v11.5"/></g><circle cx="7" cy="17.5" r="2.6"/><circle cx="16" cy="15.5" r="2.6"/>`,
   // Where a song comes from: a screen for this PC, an apple, and a play button in a rounded box.
