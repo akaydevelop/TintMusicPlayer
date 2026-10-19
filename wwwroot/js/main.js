@@ -6,6 +6,7 @@ import * as apple from './apple.js';
 import * as youtube from './youtube.js';
 import * as library from './library.js';
 import * as prefs from './prefs.js';
+import * as update from './update.js';
 import { initDeck, themeNow } from './deck.js';
 import { initPresence } from './presence.js';
 import { initSystem } from './system.js';
@@ -154,6 +155,7 @@ async function boot() {
   prefs.onChange(() => refresh('prefs'));
   apple.onChange(() => { drawAppleTabs(); refresh('apple'); });
   youtube.onChange(() => refresh('youtube'));
+  update.onChange(() => refresh('update'));
   player.on((kind) => { if (kind === 'track') refresh('track'); });
 
   await Promise.all([library.start(), youtube.init()]);
@@ -161,9 +163,10 @@ async function boot() {
 
   // Apple's player loads after the local library is already on screen.
   apple.init();
+  update.init();
 }
 
 // A handle for poking at the app from DevTools.
-window.tint = { player, apple, youtube, library, prefs };
+window.tint = { player, apple, youtube, library, prefs, update };
 
 boot();

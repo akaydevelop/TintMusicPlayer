@@ -662,6 +662,8 @@ sealed class ChromeHost : IHost
         return new Rectangle(0, 0, 1920, 1080);
     }
 
+    public void Quit() => _ = Stop();
+
     public void SetMini(bool on) => _ = Task.Run(() => Mini(on));
 
     async Task Mini(bool on)

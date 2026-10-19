@@ -29,6 +29,9 @@ interface IHost
     /// <summary>Opens the hidden YouTube Music page that plays songs with the site's own player.</summary>
     Task<bool> OpenYouTubePage(bool again);
 
+    /// <summary>Closes Tint as if the person had closed its window.</summary>
+    void Quit();
+
     /// <summary>What the page says is playing, for the system's media controls.</summary>
     void ShowNowPlaying(SystemTrack? track, bool playing, long at);
 }

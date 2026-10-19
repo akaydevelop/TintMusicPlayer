@@ -47,14 +47,16 @@ sealed class LocalServer : IDisposable
     readonly AppleToken _token;
     readonly DiscordPresence _discord;
     readonly YouTube _youtube;
+    readonly Updater _updater;
     readonly string _webRoot;
     HttpListener? _listener;
 
     public int Port { get; private set; }
     public string Origin => $"http://127.0.0.1:{Port}";
 
-    public LocalServer(IHost host, Settings settings, Library library, AppleToken token, DiscordPresence discord, YouTube youtube, string webRoot)
+    public LocalServer(IHost host, Settings settings, Library library, AppleToken token, DiscordPresence discord, YouTube youtube, Updater updater, string webRoot)
     {
+        _updater = updater;
         _youtube = youtube;
         _host = host;
         _settings = settings;
@@ -301,6 +303,23 @@ sealed class LocalServer : IDisposable
                 await WriteJson(res, new { ok = true });
                 return;
 
+            case "update" when !post:
+                await WriteJson(res, await _updater.Status(check: req.QueryString["check"] == "1", force: req.QueryString["force"] == "1"));
+                return;
+
+            case "update/download" when post:
+                _updater.Download();
+                await WriteJson(res, await _updater.Status(check: false));
+                return;
+
+            case "update/restart" when post:
+                {
+                    bool ok = _updater.Apply();
+                    await WriteJson(res, await _updater.Status(check: false));
+                    if (ok) _host.Quit();
+                    return;
+                }
+
             case "youtube/status":
                 await WriteJson(res, await _youtube.Status());
                 return;
@@ -405,7 +424,8 @@ sealed class LocalServer : IDisposable
                     var url = body?["url"]?.GetValue<string>() ?? "";
                     bool allowed = url.StartsWith("https://developer.apple.com/", StringComparison.Ordinal)
                         || url.StartsWith("https://discord.com/developers/", StringComparison.Ordinal)
-                        || url == "https://music.apple.com/account/settings";
+                        || url == "https://music.apple.com/account/settings"
+                        || url.StartsWith("https://github.com/akaydevelop/TintMusicPlayer/releases/", StringComparison.Ordinal);
                     if (allowed) Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
                     await WriteJson(res, new { ok = allowed });
                     return;

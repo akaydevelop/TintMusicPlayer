@@ -664,6 +664,24 @@ details .field { margin-top: 10px; }
   transition: opacity 0.25s var(--ease), translate 0.25s var(--ease);
 }
 .toast.is-leaving { opacity: 0; translate: 0 6px; }
+
+/* A newer Tint: stays until it is dealt with, so it can be clicked, unlike the toasts below it. */
+#update {
+  max-width: 46ch;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--raise);
+  font-size: 13.5px;
+  box-shadow: 0 12px 28px -12px rgb(0 0 0 / 0.6);
+  pointer-events: auto;
+  animation: toast-in 0.4s var(--ease);
+}
+#update[hidden] { display: none; }
+.update-bar { height: 4px; margin-top: 10px; border-radius: 2px; background: var(--hover); overflow: hidden; }
+.update-bar span { display: block; height: 100%; background: var(--accent); transition: width 0.3s var(--ease); }
+.update-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin-top: 10px; }
+.update-actions:empty { display: none; }
 @keyframes toast-in { from { opacity: 0; translate: 0 14px; scale: 0.96; } }
 
 /* ---- the browsing pane at other widths ---------------------------------------------------------- */
@@ -739,6 +757,7 @@ details .field { margin-top: 10px; }
   #deck { border-right: 0; }
   .only-mini { display: inline-grid; }
   #toasts { left: 16px; right: 16px; }
+  #update { display: none; }
 }
 
 /* A low window has no room for the line of songs; the controls sit in the middle of it. */

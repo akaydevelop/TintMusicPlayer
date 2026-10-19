@@ -6,6 +6,7 @@ import { h, fill, cover, fmtTime, fmtLength, plural, showMenu, toast, replay, Vi
 import * as player from './player.js';
 import * as apple from './apple.js';
 import * as youtube from './youtube.js';
+import * as update from './update.js';
 import { local, compareText, searchLocal, nudge } from './library.js';
 import { get, post } from './api.js';
 import { prefs, save as savePrefs } from './prefs.js';
@@ -1105,11 +1106,33 @@ function settingsView() {
           h('span', { class: 'quiet' }, 'Normally a light cover gives you a light window. Turn this on to stay dark for every cover.'))));
   }
 
+  let checking = false;
+
+  function updateSection() {
+    const s = update.getStatus();
+    if (!s?.possible) return null;
+    const text = update.describe() || (checking ? 'Looking for a newer version…' : 'This is the newest version.');
+    return h('section', { class: 'panel' },
+      h('h2', {}, 'Updates'),
+      h('p', {}, `This is Tint ${s.current}. ${text}`),
+      s.state === 'downloading' && h('div', { class: 'update-bar' }, h('span', { style: { width: `${update.percent()}%` } })),
+      h('div', { class: 'panel-actions' },
+        update.actions(button),
+        s.state !== 'downloading' && s.state !== 'ready' && button('Check now', async () => {
+          checking = true;
+          draw();
+          await update.check(true);
+          checking = false;
+          draw();
+        }),
+        s.latest && s.page && h('button', { class: 'text-btn', onclick: update.openNotes }, "What's new")));
+  }
+
   function draw() {
     // Typing shouldn't be interrupted by a background refresh.
     if (el.contains(document.activeElement) && /INPUT|TEXTAREA/.test(document.activeElement.tagName)) return;
-    fill(el, pageHead('Settings'), foldersSection(), appleSection(), youtubeSection(), discordSection(), lookSection(),
-      h('p', { class: 'quiet about' }, 'Tint 0.1. Space plays and pauses, Ctrl+Right and Ctrl+Left change songs, Ctrl+F searches.'));
+    fill(el, pageHead('Settings'), foldersSection(), appleSection(), youtubeSection(), discordSection(), lookSection(), updateSection(),
+      h('p', { class: 'quiet about' }, `Tint${update.getStatus() ? ' ' + update.getStatus().current : ''}. Space plays and pauses, Ctrl+Right and Ctrl+Left change songs, Ctrl+F searches.`));
   }
 
   draw();

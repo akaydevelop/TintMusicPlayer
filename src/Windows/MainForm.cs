@@ -34,7 +34,7 @@ sealed class MainForm : Form, IHost
     Rectangle _fullBounds;
     bool _fullMaximized;
 
-    public MainForm(bool dev)
+    public MainForm(bool dev, Updater updater)
     {
         _dev = dev;
         _settings = Settings.Load();
@@ -53,7 +53,7 @@ sealed class MainForm : Form, IHost
         Controls.Add(_web);
 
         _discord = new DiscordPresence(_settings, new CoverLookup());
-        _server = new LocalServer(this, _settings, _library, new AppleToken(_settings), _discord, _youtube, Paths.WebRoot(dev));
+        _server = new LocalServer(this, _settings, _library, new AppleToken(_settings), _discord, _youtube, updater, Paths.WebRoot(dev));
         _chromeTimer.Tick += (_, _) => StepChrome();
     }
 
@@ -346,6 +346,8 @@ sealed class MainForm : Form, IHost
         };
         return dialog.ShowDialog(this) == DialogResult.OK ? dialog.FileName : null;
     }
+
+    public void Quit() => BeginInvoke(Close);
 
     public void BringForward()
     {

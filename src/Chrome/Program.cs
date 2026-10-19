@@ -8,6 +8,7 @@ static class Program
     static async Task<int> Main(string[] args)
     {
         bool dev = args.Contains("--dev");
+        Updater.AfterRestart(args);
 
         using var instance = SingleInstance.Claim();
         if (instance == null) return 0; // another Tint is running, and has been brought forward
@@ -16,8 +17,9 @@ static class Program
         var library = new Library(settings);
         var youtube = new YouTube();
         var discord = new DiscordPresence(settings, new CoverLookup());
+        var updater = new Updater(dev);
         var host = new ChromeHost(dev, settings, library, youtube);
-        var server = new LocalServer(host, settings, library, new AppleToken(settings), discord, youtube, Paths.WebRoot(dev));
+        var server = new LocalServer(host, settings, library, new AppleToken(settings), discord, youtube, updater, Paths.WebRoot(dev));
         host.Server = server;
         library.Thumbnailer = host.Thumbnail;
         instance.Woken += host.BringForward;
@@ -50,6 +52,7 @@ static class Program
             discord.Dispose();
             server.Dispose();
             library.Dispose();
+            updater.Relaunch();
         }
     }
 }

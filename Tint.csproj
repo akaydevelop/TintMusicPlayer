@@ -14,7 +14,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>Tint</AssemblyName>
     <RootNamespace>Tint</RootNamespace>
-    <Version>0.1.2</Version>
+    <Version>0.2.0</Version>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <TieredPGO>true</TieredPGO>
     <DebugType>embedded</DebugType>

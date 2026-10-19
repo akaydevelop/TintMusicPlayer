@@ -38,6 +38,17 @@ packages, is found the same way as on Windows.
 On Linux the Apple Music key and token Tint keeps are not encrypted (there is nothing built in to
 match Windows' per-user encryption); `~/.local/share/Tint` is made readable by its owner alone.
 
+### Updates
+
+A copy installed from a release keeps itself current (`Updater.cs`). Every few hours Tint asks
+GitHub for this repository's releases; when a newer one is out, a notice offers it, and Settings
+shows the same under Updates. Choosing Update downloads that release's package for this system
+and checks it against the SHA-256 GitHub lists for it (a download that doesn't match is thrown
+away). Restart now then puts it in place: the program's files are renamed aside, the new ones
+moved in, and the new Tint starts and clears the old files away. Settings, library and sign-ins
+are in the data folder and stay as they are. A build run from the project folder, or with
+`--dev`, doesn't look for updates; neither does a copy in a folder it can't write to.
+
 ## Music on this PC
 
 Tint scans `Music\iTunes\iTunes Media` and `Music\Apple Music\Media` by default (on Linux, the
