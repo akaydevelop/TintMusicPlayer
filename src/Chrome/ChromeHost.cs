@@ -64,6 +64,7 @@ sealed class ChromeHost : IHost
     Task<bool>? _signingIn;
 
     public LocalServer? Server { get; set; }
+    string _backdrop = "";
 
     public ChromeHost(bool dev, Settings settings, Library library, YouTube youtube)
     {
@@ -87,9 +88,12 @@ sealed class ChromeHost : IHost
             Console.Error.WriteLine($"Tint: using {browser}. Chromium is often packaged without Widevine, which Apple Music's full songs need; Google Chrome has it.");
 
         // The first thing shown is only a backdrop in the player's colours, while the page itself loads.
-        const string Backdrop = "data:text/html,%3Ctitle%3ETint%3C/title%3E%3Cbody%20style=%22background:%2314262b%22%3E";
+        // Its address also names the window for the desktop: on Wayland, Chrome makes an app window's
+        // app_id from it ("chrome-127.0.0.1__start.html-Default", the port left out), and install.sh
+        // puts a desktop entry by that name in place, so the window shows Tint's icon.
+        _backdrop = Server!.Origin + "/start.html";
         _browserPath = browser;
-        (_browser, _cdp) = await Browser.Start(browser, Backdrop, Placement(), _dev);
+        (_browser, _cdp) = await Browser.Start(browser, _backdrop, Placement(), _dev);
         Cdp.Event += OnEvent;
 
         await Cdp.Send("Target.setDiscoverTargets", new JsonObject { ["discover"] = true });
@@ -129,7 +133,7 @@ sealed class ChromeHost : IHost
         {
             var targets = await Cdp.Send("Target.getTargets");
             var page = (targets["targetInfos"] as JsonArray)?.OfType<JsonObject>()
-                .FirstOrDefault(t => t["type"]?.GetValue<string>() == "page" && (t["url"]?.GetValue<string>() ?? "").StartsWith("data:text/html", StringComparison.Ordinal));
+                .FirstOrDefault(t => t["type"]?.GetValue<string>() == "page" && t["url"]?.GetValue<string>() == _backdrop);
             if (page != null) return page["targetId"]!.GetValue<string>();
             await Task.Delay(100);
         }

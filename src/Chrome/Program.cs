@@ -37,6 +37,7 @@ static class Program
         {
             server.Start();
             library.Start();
+            DesktopEntry.Ensure();
             await host.Run();
             return 0;
         }

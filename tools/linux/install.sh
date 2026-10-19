@@ -72,6 +72,7 @@ Icon=tint
 Terminal=false
 Categories=AudioVideo;Audio;Player;
 StartupNotify=true
+StartupWMClass=Tint
 EOF
 command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$menu" || true
 
