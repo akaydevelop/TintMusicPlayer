@@ -285,6 +285,87 @@ sealed partial class YouTube : IDisposable
         return await reply.Content.ReadAsStringAsync();
     }
 
+    // ---- lyrics ---------------------------------------------------------------------------------
+
+    // YouTube Music's Android app is sent lyrics with times; its web page only gets the plain text.
+    const string AppClient = "ANDROID_MUSIC";
+    const string AppVersion = "7.27.52";
+
+    /// <summary>
+    /// A song's lyrics as YouTube Music has them, timed when it can: Lyrics.Found's shape, or null
+    /// when the song has none.
+    /// </summary>
+    public async Task<Lyrics.Found?> FindLyrics(string videoId)
+    {
+        var watch = JsonNode.Parse(await Call("next", new JsonObject { ["videoId"] = videoId }, null));
+        // The "Lyrics" tab beside "Up next" leads to a page of its own.
+        var page = Every(watch, "browseId").Select(id => id?.GetValue<string>()).FirstOrDefault(id => id?.StartsWith("MPLY") == true);
+        if (page == null) return null;
+
+        try
+        {
+            var question = new JsonObject
+            {
+                ["browseId"] = page,
+                ["context"] = new JsonObject { ["client"] = new JsonObject { ["clientName"] = AppClient, ["clientVersion"] = AppVersion, ["hl"] = "en" } },
+            };
+            using var message = new HttpRequestMessage(HttpMethod.Post, $"{Site}/youtubei/v1/browse?prettyPrint=false");
+            message.Content = new StringContent(question.ToJsonString(), Encoding.UTF8, "application/json");
+            message.Headers.TryAddWithoutValidation("User-Agent", $"com.google.android.apps.youtube.music/{AppVersion} (Linux; U; Android 14) gzip");
+            using var reply = await Http.SendAsync(message);
+            if (reply.IsSuccessStatusCode)
+            {
+                var answer = JsonNode.Parse(await reply.Content.ReadAsStringAsync());
+                var timed = Every(answer, "timedLyricsData").FirstOrDefault() as JsonArray;
+                var lines = timed?.Select(line => new Lyrics.Line(
+                        double.Parse(line?["cueRange"]?["startTimeMilliseconds"]?.GetValue<string>() ?? "0") / 1000,
+                        line?["lyricLine"]?.GetValue<string>() ?? ""))
+                    .ToList();
+                if (lines is { Count: > 0 }) return new Lyrics.Found(lines, null, SourceIn(answer));
+            }
+        }
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException or FormatException)
+        {
+            // The plain text below will do.
+        }
+
+        var plain = JsonNode.Parse(await Call("browse", new JsonObject { ["browseId"] = page }, null));
+        var shelf = Every(plain, "musicDescriptionShelfRenderer").FirstOrDefault();
+        var text = string.Concat((shelf?["description"]?["runs"] as JsonArray ?? []).Select(run => run?["text"]?.GetValue<string>()));
+        return text.Length > 0 ? new Lyrics.Found(null, text, SourceIn(plain)) : null;
+    }
+
+    /// <summary>Who YouTube got the lyrics from, from its "Source: LyricFind" line.</summary>
+    static string SourceIn(JsonNode? answer)
+    {
+        foreach (var node in Every(answer, "text"))
+        {
+            if (node is JsonValue value && value.TryGetValue<string>(out var text) && text.StartsWith("Source: ")) return text["Source: ".Length..];
+        }
+        return "YouTube Music";
+    }
+
+    /// <summary>Every value stored under `key`, at any depth.</summary>
+    static IEnumerable<JsonNode?> Every(JsonNode? node, string key)
+    {
+        switch (node)
+        {
+            case JsonObject obj:
+                foreach (var (name, value) in obj)
+                {
+                    if (name == key) yield return value;
+                    foreach (var found in Every(value, key)) yield return found;
+                }
+                break;
+            case JsonArray list:
+                foreach (var item in list)
+                {
+                    foreach (var found in Every(item, key)) yield return found;
+                }
+                break;
+        }
+    }
+
     // YouTube Music's own number for the "Audio quality" setting of its web player, and for "High".
     const string QualitySetting = "304";
     const int QualityHigh = 3;

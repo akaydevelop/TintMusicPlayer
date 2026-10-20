@@ -130,6 +130,17 @@ artist shows where it is really coming from. `match.js` decides what counts as t
 recording: the title, the artist and the length all have to be convincing. If nothing convincing
 turns up, the song fails as before.
 
+## Lyrics
+
+The speech-bubble button beside the song playing opens its lyrics. The line being sung lights up
+and stays in view; clicking a line plays from there, and scrolling by hand pauses the following
+for a few seconds. For a song from Apple Music, Apple's own timed lyrics are asked for first
+(through MusicKit, so they need the Apple sign-in). Then the host (`Lyrics.cs`) asks YouTube
+Music, for the song's own video or the same recording found by name: its Android app's service
+sends timed lyrics where the web page only gets plain text. Last is
+[LRCLIB](https://lrclib.net), a free public collection of timed lyrics looked up by title, artist
+and length. Plain lyrics are shown only when nobody has timed ones.
+
 ## Discord
 
 Tint can show the current song on your Discord profile ("Listening to ..."), with the artist,

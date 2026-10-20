@@ -162,6 +162,24 @@ export async function englishTitle(track) {
   return englishTitles.get(id);
 }
 
+/**
+ * A catalog song's lyrics as Apple keeps them: a TTML document, timed line by line when Apple has
+ * the times. Null for a song Apple has no lyrics for, and for one this sign-in can't read them for.
+ */
+export async function lyricsOf(track) {
+  if (track?.source !== 'apple' || !/^\d+$/.test(track.appleId || '') || !isSignedIn()) return null;
+  for (const kind of ['syncedLyrics', 'lyrics']) {
+    try {
+      const res = await call(`/v1/catalog/{{storefrontId}}/songs/${track.appleId}/${kind}`);
+      const ttml = res.data?.[0]?.attributes?.ttml;
+      if (ttml) return ttml;
+    } catch {
+      // Not there, or not allowed; the other kind, or another service, may have them.
+    }
+  }
+  return null;
+}
+
 /** Walks a paged collection, handing each page to `onPage` as it arrives. */
 async function eachPage(path, params, onPage, { max = 20000 } = {}) {
   let offset = 0;

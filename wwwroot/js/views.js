@@ -10,6 +10,7 @@ import * as update from './update.js';
 import { local, compareText, searchLocal, nudge } from './library.js';
 import { get, post } from './api.js';
 import { prefs, save as savePrefs } from './prefs.js';
+import { lyricsFor } from './lyrics.js';
 
 const ROW = 52;
 
@@ -771,6 +772,110 @@ function searchView({ scroller, params }) {
   };
 }
 
+// ---- Lyrics -------------------------------------------------------------------------------------
+
+// A line lights a moment early, as the singer reaches it rather than after.
+const LYRICS_LEAD = 0.2;
+// Scrolling by hand stops the page following the song for a while.
+const LYRICS_HOLD_MS = 4000;
+
+function lyricsView({ scroller }) {
+  const el = h('section', { class: 'page lyrics-page' });
+  const still = window.matchMedia('(prefers-reduced-motion: reduce)');
+  let track = null;
+  let result = null; // 'loading', an Error, null (none found), or what lyricsFor() found
+  let rows = [];
+  let lit = -1;
+  let heldUntil = 0;
+  let alive = true;
+  // The player reports its position a few times a second; between reports it is worked out.
+  let clock = { time: player.state.time, at: performance.now() };
+
+  const now = () => clock.time + (player.state.playing ? (performance.now() - clock.at) / 1000 : 0);
+
+  function load() {
+    track = player.current();
+    result = track ? 'loading' : null;
+    draw();
+    if (!track) return;
+    const mine = track;
+    lyricsFor(track).then((r) => { result = r; }, (e) => { result = e instanceof Error ? e : new Error(String(e)); })
+      .then(() => { if (alive && player.current() === mine) draw(); });
+  }
+
+  function draw() {
+    rows = [];
+    lit = -1;
+    const head = pageHead('Lyrics', track ? `${track.title}${track.artist ? ' · ' + track.artist : ''}` : null);
+    if (!track) return fill(el, head, emptyState('Nothing playing', 'The lyrics of the song playing show here.'));
+    if (result === 'loading') return fill(el, head, loading('Looking for lyrics…'));
+    if (result instanceof Error) return fill(el, head, failure(result, load));
+    if (!result) return fill(el, head, emptyState('No lyrics for this song', "Apple Music, YouTube Music and LRCLIB don't have lyrics for it."));
+
+    if (!result.lines) {
+      return fill(el, head,
+        h('div', { class: 'lyrics is-plain' }, result.text.split('\n').map((line) => h('p', {}, line || ' '))),
+        h('p', { class: 'quiet lyrics-source' }, `These lyrics aren't timed to the song. From ${result.source}.`));
+    }
+    rows = result.lines.map((line) => h('button', {
+      class: 'lyric' + (line.text ? '' : ' is-gap'),
+      onclick: () => { heldUntil = 0; player.seek(line.time); if (!player.state.playing) player.toggle(); },
+    }, line.text || '♪'));
+    fill(el, head, h('div', { class: 'lyrics' }, rows), h('p', { class: 'quiet lyrics-source' }, `Lyrics from ${result.source}`));
+    follow(true);
+  }
+
+  /** Lights the line being sung and keeps it in view. */
+  function follow(jump = false) {
+    if (!rows.length) return;
+    const t = now() + LYRICS_LEAD;
+    const lines = result.lines;
+    let line = -1;
+    while (line + 1 < lines.length && lines[line + 1].time <= t) line++;
+    if (line === lit && !jump) return;
+    rows.forEach((row, i) => { row.classList.toggle('is-past', i < line); row.classList.toggle('is-now', i === line); });
+    lit = line;
+    if (performance.now() < heldUntil) return;
+    const row = rows[Math.max(line, 0)];
+    const box = scroller.getBoundingClientRect(), at = row.getBoundingClientRect();
+    // The line being sung sits a little above the middle, with what comes next below it.
+    const top = scroller.scrollTop + at.top - box.top + at.height / 2 - scroller.clientHeight * 0.38;
+    scroller.scrollTo({ top: line < 0 ? 0 : top, behavior: jump || still.matches ? 'instant' : 'smooth' });
+  }
+
+  let frame = requestAnimationFrame(function tick() {
+    frame = requestAnimationFrame(tick);
+    follow();
+  });
+
+  const hold = () => { heldUntil = performance.now() + LYRICS_HOLD_MS; };
+  scroller.addEventListener('wheel', hold, { passive: true });
+  scroller.addEventListener('touchmove', hold, { passive: true });
+
+  const off = player.on((kind) => {
+    if (kind === 'track') load();
+    else if (kind === 'time' || kind === 'state' || kind === 'seek') {
+      const guess = now(), real = player.state.time;
+      // A report a hair behind the worked-out time is the report being late; keeping the guess stops
+      // the light stepping back a line and forward again.
+      clock = { time: kind === 'time' && player.state.playing && real < guess && guess - real < 0.4 ? guess : real, at: performance.now() };
+      if (kind === 'seek') { heldUntil = 0; follow(true); }
+    }
+  });
+
+  load();
+  return {
+    el,
+    destroy: () => {
+      alive = false;
+      cancelAnimationFrame(frame);
+      off();
+      scroller.removeEventListener('wheel', hold);
+      scroller.removeEventListener('touchmove', hold);
+    },
+  };
+}
+
 // ---- Settings -----------------------------------------------------------------------------------
 
 function settingsView() {
@@ -1182,6 +1287,7 @@ export const routes = {
   home: homeView,
   search: searchView,
   settings: settingsView,
+  lyrics: lyricsView,
   'album/l': localAlbumView,
   'album/a': appleAlbumView,
   'playlist/a': applePlaylistView,

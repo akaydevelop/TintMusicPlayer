@@ -212,7 +212,19 @@ input, textarea, select { font: inherit; color: inherit; }
 .sleeve-empty { position: absolute; inset: 0; fill: none; stroke: var(--line); stroke-width: 1.2; }
 .deck-art.has-art .sleeve-empty { display: none; }
 
-.deck-meta { margin-top: 18px; min-height: 50px; }
+.deck-meta {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 8px;
+  margin-top: 18px;
+  min-height: 50px;
+}
+.deck-text { min-width: 0; }
+/* Beside the song's name, centred on however many lines it takes. */
+.deck-actions { display: flex; gap: 2px; margin-right: -4px; color: var(--dim); }
+.deck-actions:not(:has(> :not([hidden]))) { display: none; }
+.deck-actions .icon-btn[hidden] { display: none; }
 #deck-title {
   font: 600 21px/1.2 var(--display);
   font-variation-settings: 'wdth' 90;
@@ -225,8 +237,6 @@ input, textarea, select { font: inherit; color: inherit; }
 }
 .deck-by { display: flex; align-items: center; gap: 6px; margin-top: 3px; min-width: 0; color: var(--dim); }
 #deck-title-english { margin: 5px 0 0; color: var(--dim); font: 400 13px/1.4 var(--text); overflow-wrap: anywhere; }
-#b-share { flex: none; margin: -4px -4px -4px auto; color: var(--dim); }
-#b-share[hidden] { display: none; }
 #deck-artist { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .source-icon { display: grid; flex: none; }
 .source-icon svg { width: 16px; height: 16px; }
@@ -294,6 +304,30 @@ input, textarea, select { font: inherit; color: inherit; }
 /* When the song at the head of the line starts playing, the rest move up into its place. */
 #queue.shift > li { animation: shift 0.45s var(--ease); }
 @keyframes shift { from { translate: 0 48px; } }
+
+/* ---- lyrics ------------------------------------------------------------------------------------- */
+
+/* Room below the last line, so it can still rise to where the line being sung sits. */
+.lyrics-page { padding-bottom: 45vh; }
+.lyrics { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; max-width: 34em; }
+.lyric {
+  margin-left: -12px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  color: var(--ink);
+  font: 700 clamp(21px, 3.4cqi, 30px)/1.3 var(--display);
+  font-variation-settings: 'wdth' 90;
+  text-align: left;
+  overflow-wrap: anywhere;
+  opacity: 0.4;
+  transition: opacity 0.4s var(--ease), background-color 0.2s var(--ease);
+}
+.lyric.is-past { opacity: 0.28; }
+.lyric.is-now { opacity: 1; }
+.lyric:hover { background: var(--hover); }
+.lyric.is-gap { letter-spacing: 0.2em; }
+.lyrics.is-plain p { color: var(--ink); font: 600 19px/1.5 var(--display); }
+.lyrics-source { margin-top: 26px; }
 
 /* ---- browsing pane ------------------------------------------------------------------------------ */
 

@@ -36,13 +36,23 @@ let volumeByHand = false;
 
 export function initDeck() {
   for (const id of ['deck-art', 'deck-title', 'deck-title-english', 'deck-source', 'deck-artist', 'seek', 't-now', 't-format', 't-left', 'b-shuffle', 'b-prev', 'b-play',
-    'b-next', 'b-repeat', 'b-mute', 'vol', 'b-expand', 'b-clear', 'queue', 'queue-empty', 'b-share']) els[id] = $(id);
+    'b-next', 'b-repeat', 'b-mute', 'vol', 'b-expand', 'b-clear', 'queue', 'queue-empty', 'b-share', 'b-lyrics']) els[id] = $(id);
 
   els['b-prev'].innerHTML = icon('prev');
   els['b-next'].innerHTML = icon('next');
   els['b-shuffle'].innerHTML = icon('shuffle');
   els['b-expand'].innerHTML = icon('expand');
   els['b-share'].innerHTML = icon('share');
+  els['b-lyrics'].innerHTML = icon('lyrics');
+  els['b-lyrics'].addEventListener('click', () => {
+    if (location.hash === '#/lyrics') {
+      if (history.length > 1) history.back(); else location.hash = '#/albums';
+      return;
+    }
+    // The mini player has no room for the page, so the window opens up first.
+    if (getComputedStyle($('browse')).display === 'none') post('/api/mini', { on: false }).catch(() => {});
+    location.hash = '#/lyrics';
+  });
   // A song from Apple Music or this PC is looked up on YouTube Music when the pointer comes near,
   // so the link is usually there by the click (the clipboard only takes it soon after one).
   const lookAhead = () => { const track = player.current(); if (track) linkFor(track).catch(() => {}); };
@@ -58,7 +68,7 @@ export function initDeck() {
   els['b-clear'].addEventListener('click', player.clearUpcoming);
   els['b-expand'].addEventListener('click', () => post('/api/mini', { on: false }).catch(() => {}));
   // Right-clicking the song playing offers its YouTube Music link too.
-  for (const part of [els['deck-art'], els['deck-title'].closest('.deck-meta')]) {
+  for (const part of [els['deck-art'], els['deck-title'].closest('.deck-text')]) {
     part.addEventListener('contextmenu', (e) => {
       const track = player.current();
       if (!track) return;
@@ -133,6 +143,7 @@ function drawTrack() {
   els['deck-artist'].textContent = track ? track.artist : 'Choose an album or a song to start.';
   els['deck-title'].title = track ? track.title : '';
   els['b-share'].hidden = !track;
+  els['b-lyrics'].hidden = !track;
   const secondary = els['deck-title-english'];
   secondary.textContent = '';
   secondary.hidden = true;

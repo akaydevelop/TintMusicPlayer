@@ -64,6 +64,7 @@ function show() {
     else tab.removeAttribute('aria-current');
   }
   $('b-settings').classList.toggle('is-here', route.name === 'settings');
+  $('b-lyrics').classList.toggle('is-here', route.name === 'lyrics');
   $('b-back').disabled = !(window.navigation?.canGoBack ?? history.length > 1);
 
   if (route.name === 'search') {

@@ -47,6 +47,7 @@ sealed class LocalServer : IDisposable
     readonly AppleToken _token;
     readonly DiscordPresence _discord;
     readonly YouTube _youtube;
+    readonly Lyrics _lyrics;
     readonly Updater _updater;
     readonly string _webRoot;
     HttpListener? _listener;
@@ -58,6 +59,7 @@ sealed class LocalServer : IDisposable
     {
         _updater = updater;
         _youtube = youtube;
+        _lyrics = new Lyrics(youtube);
         _host = host;
         _settings = settings;
         _library = library;
@@ -385,6 +387,23 @@ sealed class LocalServer : IDisposable
                     res.ContentType = "application/json; charset=utf-8";
                     res.ContentLength64 = answer.Length;
                     await res.OutputStream.WriteAsync(answer);
+                    return;
+                }
+
+            case "lyrics":
+                {
+                    var q = req.QueryString;
+                    double.TryParse(q["duration"], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var duration);
+                    try
+                    {
+                        var found = await _lyrics.Find(q["youtube"], q["title"] ?? "", q["artist"] ?? "", q["album"] ?? "", duration);
+                        await WriteJson(res, new { found });
+                    }
+                    catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException)
+                    {
+                        res.StatusCode = 502;
+                        await WriteJson(res, new { error = "The lyrics services didn't answer. Try again in a moment." });
+                    }
                     return;
                 }
 
