@@ -328,6 +328,7 @@ input, textarea, select { font: inherit; color: inherit; }
 .lyric.is-gap { letter-spacing: 0.2em; }
 .lyrics.is-plain p { color: var(--ink); font: 600 19px/1.5 var(--display); }
 .lyrics-source { margin-top: 26px; }
+.lyrics-working { margin: -8px 0 14px; }
 
 /* ---- browsing pane ------------------------------------------------------------------------------ */
 

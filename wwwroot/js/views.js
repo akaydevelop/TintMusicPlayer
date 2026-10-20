@@ -11,6 +11,7 @@ import { local, compareText, searchLocal, nudge } from './library.js';
 import { get, post } from './api.js';
 import { prefs, save as savePrefs } from './prefs.js';
 import { lyricsFor } from './lyrics.js';
+import { hasJapanese, romanize } from './romaji.js';
 
 const ROW = 52;
 
@@ -778,6 +779,9 @@ function searchView({ scroller, params }) {
 const LYRICS_LEAD = 0.2;
 // Scrolling by hand stops the page following the song for a while.
 const LYRICS_HOLD_MS = 4000;
+// Whether Japanese lyrics are shown in romaji, kept by the page between runs.
+const ROMAJI_KEY = 'tint.lyrics.romaji';
+const romajiWanted = () => localStorage.getItem(ROMAJI_KEY) === 'on';
 
 function lyricsView({ scroller }) {
   const el = h('section', { class: 'page lyrics-page' });
@@ -803,25 +807,53 @@ function lyricsView({ scroller }) {
       .then(() => { if (alive && player.current() === mine) draw(); });
   }
 
+  /** The lyrics' lines as they should be shown: as written, or in romaji once that is worked out. */
+  function shownTexts(texts) {
+    if (!romajiWanted() || !hasJapanese(texts.join('\n'))) return texts;
+    if (result.romaji) return result.romaji;
+    if (!result.romajiPending) {
+      const mine = result;
+      mine.romajiPending = romanize(texts).then((romaji) => { mine.romaji = romaji; }, (e) => {
+        mine.romajiPending = null;
+        localStorage.setItem(ROMAJI_KEY, 'off');
+        toast(e.message, { ms: 6000 });
+      }).then(() => { if (alive && result === mine) draw(); });
+    }
+    return texts;
+  }
+
   function draw() {
     rows = [];
     lit = -1;
-    const head = pageHead('Lyrics', track ? `${track.title}${track.artist ? ' · ' + track.artist : ''}` : null);
-    if (!track) return fill(el, head, emptyState('Nothing playing', 'The lyrics of the song playing show here.'));
-    if (result === 'loading') return fill(el, head, loading('Looking for lyrics…'));
-    if (result instanceof Error) return fill(el, head, failure(result, load));
-    if (!result) return fill(el, head, emptyState('No lyrics for this song', "Apple Music, YouTube Music and LRCLIB don't have lyrics for it."));
+    const summary = track ? `${track.title}${track.artist ? ' · ' + track.artist : ''}` : null;
+    if (!track) return fill(el, pageHead('Lyrics', summary), emptyState('Nothing playing', 'The lyrics of the song playing show here.'));
+    if (result === 'loading') return fill(el, pageHead('Lyrics', summary), loading('Looking for lyrics…'));
+    if (result instanceof Error) return fill(el, pageHead('Lyrics', summary), failure(result, load));
+    if (!result) return fill(el, pageHead('Lyrics', summary), emptyState('No lyrics for this song', "Apple Music, YouTube Music and LRCLIB don't have lyrics for it."));
+
+    const texts = result.lines ? result.lines.map((line) => line.text) : result.text.split('\n');
+    const shown = shownTexts(texts);
+    // Japanese lyrics can be shown in romaji instead.
+    const head = hasJapanese(texts.join('\n'))
+      ? pageHead('Lyrics', summary, segmented('Show the lyrics', [['original', 'Original'], ['romaji', 'Romaji']], romajiWanted() ? 'romaji' : 'original', (id) => {
+        localStorage.setItem(ROMAJI_KEY, id === 'romaji' ? 'on' : 'off');
+        draw();
+      }))
+      : pageHead('Lyrics', summary);
+    const working = shown === texts && romajiWanted() && result.romajiPending
+      ? h('p', { class: 'quiet lyrics-working' }, 'Working out the romaji… The first time, this downloads a Japanese dictionary (17 MB).')
+      : null;
 
     if (!result.lines) {
-      return fill(el, head,
-        h('div', { class: 'lyrics is-plain' }, result.text.split('\n').map((line) => h('p', {}, line || ' '))),
+      return fill(el, head, working,
+        h('div', { class: 'lyrics is-plain' }, shown.map((line) => h('p', {}, line || '\u00a0'))),
         h('p', { class: 'quiet lyrics-source' }, `These lyrics aren't timed to the song. From ${result.source}.`));
     }
-    rows = result.lines.map((line) => h('button', {
+    rows = result.lines.map((line, i) => h('button', {
       class: 'lyric' + (line.text ? '' : ' is-gap'),
       onclick: () => { heldUntil = 0; player.seek(line.time); if (!player.state.playing) player.toggle(); },
-    }, line.text || '♪'));
-    fill(el, head, h('div', { class: 'lyrics' }, rows), h('p', { class: 'quiet lyrics-source' }, `Lyrics from ${result.source}`));
+    }, shown[i] || '♪'));
+    fill(el, head, working, h('div', { class: 'lyrics' }, rows), h('p', { class: 'quiet lyrics-source' }, `Lyrics from ${result.source}`));
     follow(true);
   }
 

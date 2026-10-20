@@ -141,6 +141,13 @@ sends timed lyrics where the web page only gets plain text. Last is
 [LRCLIB](https://lrclib.net), a free public collection of timed lyrics looked up by title, artist
 and length. Plain lyrics are shown only when nobody has timed ones.
 
+Japanese lyrics can be switched to romaji (`romaji.js`). Kanji need a dictionary to know how they
+are read, so [kuromoji](https://github.com/takuyaa/kuromoji.js) (Apache-2.0, in
+`wwwroot\vendor\kuromoji`) splits each line into words and gives their readings, which are then
+spelled in Hepburn. Its 17 MB dictionary isn't in the download: the first time romaji is asked
+for, the host fetches it (`JapaneseDictionary.cs`), checks each file's SHA-256 and keeps it in the
+data folder.
+
 ## Discord
 
 Tint can show the current song on your Discord profile ("Listening to ..."), with the artist,

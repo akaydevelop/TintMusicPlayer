@@ -244,6 +244,26 @@ sealed class LocalServer : IDisposable
             if (text.Length > 0) body = JsonNode.Parse(text);
         }
 
+        // kuromoji asks for its dictionary a file at a time (JapaneseDictionary.cs).
+        if (route.StartsWith("japanese/", StringComparison.Ordinal) && !post)
+        {
+            var name = route["japanese/".Length..];
+            if (!JapaneseDictionary.Known(name)) { res.StatusCode = 404; return; }
+            try
+            {
+                var bytes = await File.ReadAllBytesAsync(await JapaneseDictionary.File(name));
+                // Sent as it is stored: kuromoji unpacks the files itself.
+                res.ContentType = "application/octet-stream";
+                res.ContentLength64 = bytes.Length;
+                await res.OutputStream.WriteAsync(bytes);
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidDataException or IOException)
+            {
+                res.StatusCode = 502;
+            }
+            return;
+        }
+
         switch (route)
         {
             case "library":
