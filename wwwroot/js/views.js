@@ -672,6 +672,10 @@ function searchView({ scroller, params }) {
   let parts = [];
   let remote = null; // null = not asked, 'loading', { ...results }, or an Error
   let tube = null;   // the same, for YouTube Music
+  // A pasted YouTube link: the song it points at goes first, then the rest found by its name.
+  const linked = youtube.videoIn(term);
+  let fromLink = linked ? 'loading' : null;
+  let query = linked ? '' : term;
   let alive = true;
 
   function draw() {
@@ -682,13 +686,25 @@ function searchView({ scroller, params }) {
       return;
     }
 
-    const mine = searchLocal(term);
-    const nodes = [pageHead(`Results for "${term}"`)];
+    const mine = query ? searchLocal(query) : { songs: [], albums: [] };
+    const nodes = [pageHead(linked ? 'From a YouTube link' : `Results for "${term}"`)];
     const songList = (title, tracks) => {
       const list = trackList(scroller, tracks);
       parts.push(list);
       return h('section', { class: 'shelf' }, h('h2', {}, title), list.el);
     };
+
+    if (linked) {
+      if (!youtube.isReady()) {
+        nodes.push(emptyState('YouTube Music is off', 'Switch on YouTube Music in Settings to play songs from YouTube links.'));
+        fill(el, ...nodes);
+        return;
+      }
+      if (fromLink === 'loading') nodes.push(loading('Opening the link on YouTube Music…'));
+      else if (fromLink instanceof Error) nodes.push(h('p', { class: 'quiet' }, `YouTube Music didn't answer: ${fromLink.message}`));
+      else if (!fromLink) nodes.push(emptyState('Nothing at that link', "YouTube Music doesn't have a video there, or it's private."));
+      else nodes.push(songList('On YouTube Music', [fromLink]));
+    }
 
     if (mine.songs.length) nodes.push(songList('Songs on this PC', mine.songs));
     if (mine.albums.length) nodes.push(h('section', { class: 'shelf' }, h('h2', {}, 'Albums on this PC'), grid(mine.albums)));
@@ -714,7 +730,7 @@ function searchView({ scroller, params }) {
       ? kinds.reduce((sum, kind) => sum + results[kind].length, 0) : 0);
     const found = mine.songs.length + mine.albums.length +
       count(remote, 'songs', 'albums', 'artists', 'playlists') + count(tube, 'songs', 'albums', 'artists');
-    if (!found && remote !== 'loading' && tube !== 'loading') {
+    if (!found && query && remote !== 'loading' && tube !== 'loading') {
       nodes.push(emptyState('Nothing matched', apple.instance() || tube
         ? 'Check the spelling, or try fewer words.'
         : 'Only the music on this PC was searched. Set up Apple Music or YouTube Music in Settings to search their catalogs too.'));
@@ -722,18 +738,31 @@ function searchView({ scroller, params }) {
     fill(el, ...nodes);
   }
 
-  if (term && apple.instance()) {
-    remote = 'loading';
-    apple.search(term).then((r) => { remote = r; }, (e) => { remote = e instanceof Error ? e : new Error(String(e)); })
-      .then(() => { if (alive) draw(); });
-  }
-  if (term && youtube.isReady()) {
-    youtube.warm();
-    tube = 'loading';
-    youtube.search(term).then((r) => { tube = r; }, (e) => { tube = e instanceof Error ? e : new Error(String(e)); })
-      .then(() => { if (alive) draw(); });
+  function lookUp() {
+    if (query && apple.instance()) {
+      remote = 'loading';
+      apple.search(query).then((r) => { remote = r; }, (e) => { remote = e instanceof Error ? e : new Error(String(e)); })
+        .then(() => { if (alive) draw(); });
+    }
+    if (query && youtube.isReady()) {
+      youtube.warm();
+      tube = 'loading';
+      // The linked song itself is already at the top.
+      const notIt = (r) => (fromLink ? { ...r, songs: r.songs.filter((song) => song.id !== fromLink.id) } : r);
+      youtube.search(query).then((r) => { tube = notIt(r); }, (e) => { tube = e instanceof Error ? e : new Error(String(e)); })
+        .then(() => { if (alive) draw(); });
+    }
   }
 
+  if (linked && youtube.isReady()) {
+    youtube.warm();
+    youtube.fromLink(linked).then((song) => {
+      fromLink = song;
+      if (song) query = `${song.title} ${song.artist}`.trim();
+    }, (e) => { fromLink = e instanceof Error ? e : new Error(String(e)); })
+      .then(() => { if (!alive) return; lookUp(); draw(); });
+  }
+  lookUp();
   draw();
   return {
     el,

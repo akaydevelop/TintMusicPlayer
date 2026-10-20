@@ -99,6 +99,10 @@ comes one of two ways, chosen in Settings:
 
 The line under the progress bar shows what is actually playing.
 
+A YouTube or YouTube Music link pasted into the search box opens that very video, at the top of
+the results, followed by what a search for its title finds. Search doesn't list every video
+YouTube Music can play, so this reaches the ones it misses.
+
 Signed in to Google (below), the albums, songs and playlists of your own YouTube Music library
 join the Albums, Songs and Playlists pages as a source next to this PC and Apple Music.
 

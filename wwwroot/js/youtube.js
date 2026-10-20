@@ -349,6 +349,45 @@ export async function findSong(song) {
   return bestMatch(song, rowsOf(answer).map((row) => toSong(row)).filter(Boolean));
 }
 
+/** The video a YouTube or YouTube Music link points at, or null when `text` isn't such a link. */
+export function videoIn(text) {
+  let url;
+  try { url = new URL(text.trim()); } catch { return null; }
+  const host = url.hostname.replace(/^(www|m|music)\./, '');
+  const id = host === 'youtu.be' ? url.pathname.slice(1)
+    : host === 'youtube.com' ? url.searchParams.get('v') || url.pathname.match(/^\/(shorts|embed|live)\/([^/]+)/)?.[2]
+    : null;
+  return /^[\w-]{11}$/.test(id || '') ? id : null;
+}
+
+/**
+ * The song a link points at. Search doesn't always turn up a video YouTube Music can play, so this
+ * asks for the video itself, the way the site does when a link is opened.
+ */
+export async function fromLink(id) {
+  const answer = await call('next', { videoId: id });
+  const item = findAll(answer, 'playlistPanelVideoRenderer').find((video) => video.videoId === id);
+  if (!item) return null;
+  const runs = item.longBylineText?.runs || [];
+  const artists = runs.filter((run) => isArtistPage(pageOf(run.navigationEndpoint))).map((run) => run.text);
+  const albumRun = runs.find((run) => pageOf(run.navigationEndpoint) === 'MUSIC_PAGE_TYPE_ALBUM');
+  return {
+    id: 'y:' + id,
+    source: 'youtube',
+    youtubeId: id,
+    title: textOf(item.title) || 'Untitled',
+    artist: artists.join(', ') || textOf(item.shortBylineText),
+    album: albumRun?.text || '',
+    albumHref: albumRun ? `#/album/y/${encodeURIComponent(albumRun.navigationEndpoint.browseEndpoint.browseId)}` : null,
+    duration: seconds(textOf(item.lengthText)),
+    trackNo: 0,
+    discNo: 1,
+    art: artOf(item.thumbnail),
+    explicit: findAll(item.badges, 'iconType').includes('MUSIC_EXPLICIT_BADGE'),
+    playable: true,
+  };
+}
+
 // ---- detail pages -------------------------------------------------------------------------------
 
 export async function album(id) {
