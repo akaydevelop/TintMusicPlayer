@@ -456,6 +456,10 @@ function detailHead({ art, kind, title, byline, bylineHref, facts, description, 
         }))));
 }
 
+// An album from someone's own library doesn't say which artist page is its artist's; the artist
+// page finds it by name instead (artist.js).
+const byName = (artist) => (artist ? `#/artist/l/${encodeURIComponent(artist)}` : null);
+
 function albumFacts(album, tracks) {
   const length = tracks.reduce((sum, t) => sum + (t.duration || 0), 0);
   return [album.year, plural(tracks.length, 'song'), length ? fmtLength(length) : null].filter(Boolean).join(', ');
@@ -496,7 +500,7 @@ function localAlbumView({ scroller, params }) {
     fill(el,
       detailHead({
         art: album.art, kind: 'Album on this PC', title: album.title, byline: album.artist,
-        bylineHref: `#/artist/l/${encodeURIComponent(album.artist)}`,
+        bylineHref: byName(album.artist),
         facts: albumFacts(album, album.tracks), tracks: album.tracks,
       }),
       parts.map((p) => p.el));
@@ -548,7 +552,7 @@ function appleAlbumView({ scroller, params }) {
       parts,
       nodes: [
         detailHead({
-          art: album.art, kind: 'Album', title: album.title, byline: album.artist, bylineHref: album.artistHref,
+          art: album.art, kind: 'Album', title: album.title, byline: album.artist, bylineHref: album.artistHref || byName(album.artist),
           facts: albumFacts(album, album.tracks), tracks: album.tracks,
         }),
         ...parts.map((p) => p.el),
@@ -583,7 +587,7 @@ function youtubeAlbumView({ scroller, params }) {
       parts,
       nodes: [
         detailHead({
-          art: album.art, kind: 'Album on YouTube Music', title: album.title, byline: album.artist, bylineHref: album.artistHref,
+          art: album.art, kind: 'Album on YouTube Music', title: album.title, byline: album.artist, bylineHref: album.artistHref || byName(album.artist),
           facts: albumFacts(album, album.tracks), tracks: album.tracks,
         }),
         ...parts.map((p) => p.el),
