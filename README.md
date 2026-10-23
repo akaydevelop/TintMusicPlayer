@@ -55,6 +55,13 @@ Tint scans `Music\iTunes\iTunes Media` and `Music\Apple Music\Media` by default 
 whole `~/Music` folder); add or remove folders in Settings. It plays MP3, AAC/M4A, FLAC, WAV, Ogg and Opus, and picks up new files on
 its own.
 
+An album's cover is the picture in its files, or else an image beside them (`cover.jpg`,
+`folder.jpg` and the like). An album with neither gets its cover from Apple, looked up by album
+and artist the first time it is shown and kept with the other thumbnails (`CoverLookup.cs`):
+first Apple's public iTunes Search service, then, when Apple Music is set up, the Apple Music
+catalog, which has the albums iTunes Search leaves out (new ones especially). Only a result by the
+same artist with the same album name counts.
+
 Two kinds of file are left out or greyed:
 
 - `.m4p` files are Apple Music subscription downloads. They are locked to Apple's own apps, so

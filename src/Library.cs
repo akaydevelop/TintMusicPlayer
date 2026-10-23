@@ -43,6 +43,11 @@ sealed class Library : IDisposable
     static readonly string[] FolderArtNames = { "cover", "folder", "front", "album", "artwork" };
     static readonly string[] ImageExtensions = { ".jpg", ".jpeg", ".png" };
 
+    // An album with no picture in its files or beside them takes its cover from Apple's public
+    // catalog by name (CoverLookup). Its ArtSource is this prefix, the artist and the album.
+    const string OnlineArt = "online:";
+    static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(15) };
+
     readonly Settings _settings;
     readonly object _gate = new();
     readonly List<FileSystemWatcher> _watchers = new();
@@ -52,7 +57,11 @@ sealed class Library : IDisposable
     volatile Track[] _tracks = Array.Empty<Track>();
     Dictionary<string, Track> _byId = new();
     Dictionary<string, string> _artSources = new();
+    readonly ConcurrentDictionary<string, DateTime> _onlineMisses = new();
     bool _scanning, _rescanQueued;
+
+    /// <summary>Public covers found by album name, for albums without their own and for the Discord status.</summary>
+    public CoverLookup Covers { get; } = new();
 
     public int Version { get; private set; }
     public int Protected { get; private set; }
@@ -234,7 +243,10 @@ sealed class Library : IDisposable
         return track;
     }
 
-    /// <summary>Gives every track in an album folder the same artwork, from embedded pictures or a cover image beside the files.</summary>
+    /// <summary>
+    /// Gives every track in an album folder the same artwork, from embedded pictures or a cover image
+    /// beside the files, or failing both, the album's cover found online when it is first shown.
+    /// </summary>
     static void AssignArt(Track[] tracks)
     {
         foreach (var group in tracks.GroupBy(t => (Dir: System.IO.Path.GetDirectoryName(t.Path) ?? "", Album: t.Album ?? ""), new DirAlbumComparer()))
@@ -258,6 +270,14 @@ sealed class Library : IDisposable
                 long stamp = 0;
                 try { stamp = File.GetLastWriteTimeUtc(source).Ticks; } catch { }
                 key = Hash(source.ToLowerInvariant() + "|" + stamp);
+            }
+            else if (group.Key.Album.Length > 0)
+            {
+                var first = group.First();
+                var artist = first.AlbumArtist ?? first.Artist;
+                if (artist == "Unknown artist") artist = "";
+                source = OnlineArt + artist + "\n" + group.Key.Album;
+                key = Hash(source.ToLowerInvariant());
             }
             foreach (var t in group)
             {
@@ -309,12 +329,23 @@ sealed class Library : IDisposable
         lock (_gate) source = _artSources.GetValueOrDefault(key);
         if (source == null) return null;
 
+        if (source.StartsWith(OnlineArt, StringComparison.Ordinal) &&
+            _onlineMisses.TryGetValue(key, out var missed) && DateTime.UtcNow - missed < TimeSpan.FromMinutes(10)) return null;
+
         await _artGate.WaitAsync();
         try
         {
             if (File.Exists(file)) return file;
             byte[]? data = null;
-            if (ImageExtensions.Contains(System.IO.Path.GetExtension(source).ToLowerInvariant()))
+            if (source.StartsWith(OnlineArt, StringComparison.Ordinal))
+            {
+                var (artist, album) = source[OnlineArt.Length..].Split('\n') is [var a, var b] ? (a, b) : ("", "");
+                var url = await Covers.Find(artist, album);
+                if (url == null) { _onlineMisses[key] = DateTime.UtcNow; return null; }
+                try { data = await Http.GetByteArrayAsync(url.Replace("512x512", "640x640")); }
+                catch { _onlineMisses[key] = DateTime.UtcNow; return null; }
+            }
+            else if (ImageExtensions.Contains(System.IO.Path.GetExtension(source).ToLowerInvariant()))
             {
                 data = await File.ReadAllBytesAsync(source);
             }

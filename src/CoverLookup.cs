@@ -7,8 +7,8 @@ namespace Tint;
 
 /// <summary>
 /// Finds a public cover image for an album by name, using Apple's open iTunes Search service.
-/// Discord can't reach files on this PC, so this is how local songs get artwork on a profile.
-/// Only used while the Discord status is switched on.
+/// It gives albums on this PC that carry no cover of their own one to show (Library.ArtFile), and
+/// since Discord can't reach files on this PC, it is how local songs get artwork on a profile.
 /// </summary>
 sealed class CoverLookup
 {
@@ -36,50 +36,87 @@ sealed class CoverLookup
         return _lookups.GetOrAdd(key, _ => Search(key, artist, album));
     }
 
+    /// <summary>
+    /// The Apple Music developer token, when Apple Music is set up. iTunes Search leaves out many
+    /// albums, new ones especially; Apple Music's own catalog has them, but only answers with a token.
+    /// </summary>
+    public Func<Task<string?>>? AppleToken { get; set; }
+
     async Task<string?> Search(string key, string artist, string album)
     {
-        foreach (var country in Countries())
+        var term = Uri.EscapeDataString($"{artist} {album}".Trim());
+        try
         {
-            try
+            foreach (var country in Countries())
             {
-                var term = Uri.EscapeDataString($"{artist} {album}".Trim());
                 using var doc = JsonDocument.Parse(await Http.GetStringAsync(
                     $"https://itunes.apple.com/search?term={term}&media=music&entity=album&limit=10&country={country}"));
-
-                // A near miss would put the wrong cover on someone's profile, so a result has to be by the
-                // same artist and be the same album. An exact name wins outright; failing that, the best
-                // ranked result that is the same album under its original-language title.
-                string? exact = null, translated = null;
-                foreach (var result in doc.RootElement.GetProperty("results").EnumerateArray())
-                {
-                    if (!result.TryGetProperty("collectionName", out var name) || name.GetString() is not { } found) continue;
-                    if (!result.TryGetProperty("artworkUrl100", out var art) || art.GetString() is not { Length: > 0 } candidate) continue;
-                    if (artist.Length > 0 && !(result.TryGetProperty("artistName", out var by) &&
-                        Overlaps(Simplify(by.GetString()), Simplify(artist)))) continue;
-
-                    if (Simplify(found) == Simplify(album)) { exact = candidate; break; }
-                    if (translated == null && SameAlbumOtherLanguage(album, found)) translated = candidate;
-                }
-
-                if ((exact ?? translated) is { } url)
-                {
-                    url = url.Replace("100x100", "512x512");
-                    lock (_gate)
-                    {
-                        _found[key] = url;
-                        try { File.WriteAllText(CacheFile, JsonSerializer.Serialize(_found)); } catch { }
-                    }
-                    return url;
-                }
+                var url = Pick(artist, album, doc.RootElement.GetProperty("results").EnumerateArray().Select(result => (
+                    result.TryGetProperty("artistName", out var by) ? by.GetString() : null,
+                    result.TryGetProperty("collectionName", out var name) ? name.GetString() : null,
+                    result.TryGetProperty("artworkUrl100", out var art) ? art.GetString()?.Replace("100x100", "512x512") : null)));
+                if (url != null) return Keep(key, url);
             }
-            catch
+
+            if (AppleToken != null && await AppleToken() is { Length: > 0 } token)
             {
-                // Offline, or the service is busy. The status simply goes out without a cover.
-                _lookups.TryRemove(key, out _);
-                return null;
+                foreach (var country in Countries())
+                {
+                    using var request = new HttpRequestMessage(HttpMethod.Get,
+                        $"https://api.music.apple.com/v1/catalog/{country.ToLowerInvariant()}/search?types=albums&limit=10&term={term}");
+                    request.Headers.Authorization = new("Bearer", token);
+                    // The web player's token is only honoured for music.apple.com.
+                    request.Headers.Add("Origin", "https://music.apple.com");
+                    using var response = await Http.SendAsync(request);
+                    if (!response.IsSuccessStatusCode) break;
+                    using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+                    if (!(doc.RootElement.TryGetProperty("results", out var results) && results.TryGetProperty("albums", out var albums))) continue;
+                    var url = Pick(artist, album, albums.GetProperty("data").EnumerateArray().Select(result =>
+                    {
+                        var a = result.GetProperty("attributes");
+                        return (
+                            a.TryGetProperty("artistName", out var by) ? by.GetString() : null,
+                            a.TryGetProperty("name", out var name) ? name.GetString() : null,
+                            a.TryGetProperty("artwork", out var art) && art.TryGetProperty("url", out var u) ? u.GetString()?.Replace("{w}x{h}", "512x512") : null);
+                    }));
+                    if (url != null) return Keep(key, url);
+                }
             }
         }
+        catch
+        {
+            // Offline, or the service is busy. Asked again next time.
+            _lookups.TryRemove(key, out _);
+        }
         return null;
+    }
+
+    /// <summary>
+    /// A near miss would put the wrong cover on an album, so a result has to be by the same artist and
+    /// be the same album. An exact name wins outright; failing that, the best ranked result that is the
+    /// same album under its original-language title.
+    /// </summary>
+    static string? Pick(string artist, string album, IEnumerable<(string? By, string? Name, string? Art)> results)
+    {
+        string? translated = null;
+        foreach (var (by, found, candidate) in results)
+        {
+            if (found == null || string.IsNullOrEmpty(candidate)) continue;
+            if (artist.Length > 0 && !Overlaps(Simplify(by), Simplify(artist))) continue;
+            if (Simplify(found) == Simplify(album)) return candidate;
+            if (translated == null && SameAlbumOtherLanguage(album, found)) translated = candidate;
+        }
+        return translated;
+    }
+
+    string Keep(string key, string url)
+    {
+        lock (_gate)
+        {
+            _found[key] = url;
+            try { File.WriteAllText(CacheFile, JsonSerializer.Serialize(_found)); } catch { }
+        }
+        return url;
     }
 
     static bool Overlaps(string a, string b) => a.Length > 0 && b.Length > 0 && (a.Contains(b) || b.Contains(a));

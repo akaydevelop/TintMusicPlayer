@@ -52,7 +52,7 @@ sealed class MainForm : Form, IHost
         _web = new WebView2 { Dock = DockStyle.Fill, DefaultBackgroundColor = IdleBackground };
         Controls.Add(_web);
 
-        _discord = new DiscordPresence(_settings, new CoverLookup());
+        _discord = new DiscordPresence(_settings, _library.Covers);
         _server = new LocalServer(this, _settings, _library, new AppleToken(_settings), _discord, _youtube, updater, Paths.WebRoot(dev));
         _chromeTimer.Tick += (_, _) => StepChrome();
     }

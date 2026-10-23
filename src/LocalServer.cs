@@ -64,6 +64,7 @@ sealed class LocalServer : IDisposable
         _settings = settings;
         _library = library;
         _token = token;
+        library.Covers.AppleToken = async () => (await token.Get()).Token;
         _discord = discord;
         _webRoot = Path.GetFullPath(webRoot);
     }

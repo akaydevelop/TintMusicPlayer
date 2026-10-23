@@ -16,7 +16,7 @@ static class Program
         var settings = Settings.Load();
         var library = new Library(settings);
         var youtube = new YouTube();
-        var discord = new DiscordPresence(settings, new CoverLookup());
+        var discord = new DiscordPresence(settings, library.Covers);
         var updater = new Updater(dev);
         var host = new ChromeHost(dev, settings, library, youtube);
         var server = new LocalServer(host, settings, library, new AppleToken(settings), discord, youtube, updater, Paths.WebRoot(dev));
