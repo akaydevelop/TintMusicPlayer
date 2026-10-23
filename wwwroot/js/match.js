@@ -10,6 +10,9 @@ function plain(text) {
     .replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 }
 
+/** Whether two names are the same once case, accents and punctuation are set aside ("polyphia", "Polyphia"). */
+export const sameName = (a, b) => !!plain(a) && plain(a) === plain(b);
+
 function alike(a, b) {
   a = plain(a); b = plain(b);
   if (!a || !b) return 0;

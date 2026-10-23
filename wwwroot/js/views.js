@@ -12,6 +12,7 @@ import { get, post } from './api.js';
 import { prefs, save as savePrefs } from './prefs.js';
 import { lyricsFor } from './lyrics.js';
 import { hasJapanese, romanize } from './romaji.js';
+import { profile as artistProfile, artistHref } from './artist.js';
 
 const ROW = 52;
 
@@ -70,6 +71,7 @@ function trackMenu(x, y, track) {
   showMenu(x, y, [
     { label: 'Play next', run: () => { player.playNext([track]); toast(`"${track.title}" plays next`); } },
     { label: 'Add to queue', run: () => { player.addToQueue([track]); toast(`Added "${track.title}" to the queue`); } },
+    track.artist && { label: 'Go to artist', run: () => { location.hash = artistHref(track); } },
     track.albumHref && { label: 'Go to album', run: () => { location.hash = track.albumHref; } },
     { label: 'Share YouTube Music link', run: () => youtube.share(track) },
   ]);
@@ -611,59 +613,61 @@ function youtubePlaylistView({ scroller, params }) {
 
 // ---- Artists ------------------------------------------------------------------------------------
 
-function localArtistView({ scroller, params }) {
-  const el = h('section', { class: 'page' });
-  let list = null;
-  function draw() {
-    list?.destroy();
-    const name = params[0];
-    const albums = local.albums.filter((a) => compareText(a.artist, name) === 0)
-      .sort((a, b) => (a.year || '').localeCompare(b.year || '') || compareText(a.title, b.title));
-    const songs = local.tracks.filter((t) => compareText(t.artist, name) === 0 || compareText(t.albumArtist, name) === 0);
-    list = songs.length ? trackList(scroller, songs) : null;
-    fill(el,
-      pageHead(name, [plural(albums.length, 'album'), plural(songs.length, 'song')].join(', '),
-        songs.length > 1 && button('Shuffle', () => player.playList(songs, 0, { shuffle: true }))),
-      albums.length ? h('section', { class: 'shelf' }, h('h2', {}, 'Albums'), grid(albums)) : null,
-      list ? h('section', { class: 'shelf' }, h('h2', {}, 'Songs'), list.el) : emptyState('Nothing by this artist on this PC'));
-  }
-  draw();
-  return {
-    el,
-    refresh: (why) => { if (why === 'track') list?.refresh(); else if (why === 'local') draw(); },
-    destroy: () => list?.destroy(),
+/**
+ * One artist page, whichever service it was opened from, or this PC (artist.js puts it together).
+ * The discography is Apple Music's when Apple Music is set up; YouTube Music's otherwise.
+ */
+function artistView(kind) {
+  return ({ scroller, params }) => {
+    const ref = kind === 'a' ? { apple: params[0] } : kind === 'y' ? { youtube: params[0] } : { name: params[0] };
+    if (youtube.isReady()) youtube.warm();
+    return asyncView(() => artistProfile(ref), (artist) => {
+      const parts = [];
+      const songList = (tracks) => { const list = trackList(scroller, tracks); parts.push(list); return list.el; };
+      const top = artist.songs.slice(0, 10);
+      const mine = artist.local;
+      const section = (title, ...body) => h('section', { class: 'shelf' }, h('h2', {}, title), body);
+      const nodes = [
+        artistHead(artist, top.length ? artist.songs : mine.songs),
+        top.length ? section('Top songs', songList(top)) : null,
+        mine.albums.length ? section('On this PC', grid(mine.albums)) : null,
+        !top.length && mine.songs.length ? section(mine.albums.length ? 'Songs on this PC' : 'On this PC', songList(mine.songs)) : null,
+        ...artist.sections.filter(([, items]) => items.length)
+          .map(([title, items]) => (title === 'Albums' ? section(title, grid(items)) : shelf(title, items))),
+        artist.similar.length ? shelf('Similar artists', artist.similar) : null,
+      ].filter(Boolean);
+      if (nodes.length === 1) nodes.push(emptyState('Nothing by this artist yet', kind === 'l'
+        ? 'Nothing by this artist is on this PC any more.'
+        : 'Neither Apple Music nor YouTube Music lists anything by this artist.'));
+      const from = [artist.from.apple && 'Apple Music', artist.from.youtube && 'YouTube Music'].filter(Boolean);
+      if (from.length) nodes.push(h('p', { class: 'quiet artist-from' }, `From ${from.join(' and ')}.`));
+      return { parts, nodes };
+    }, { needsApple: false });
   };
 }
 
-function appleArtistView({ scroller, params }) {
-  return asyncView(() => apple.artist(params[0]), (artist) => {
-    const top = artist.songs.slice(0, 10);
-    const list = trackList(scroller, top);
-    return {
-      parts: [list],
-      nodes: [
-        pageHead(artist.title, null, top.length > 1 && button('Shuffle top songs', () => player.playList(artist.songs, 0, { shuffle: true }))),
-        top.length ? h('section', { class: 'shelf' }, h('h2', {}, 'Top songs'), list.el) : null,
-        artist.albums.length ? h('section', { class: 'shelf' }, h('h2', {}, 'Albums'), grid(artist.albums)) : null,
-        artist.singles.length ? h('section', { class: 'shelf' }, h('h2', {}, 'Singles and EPs'), grid(artist.singles)) : null,
-      ].filter(Boolean),
-    };
-  });
-}
-
-function youtubeArtistView({ scroller, params }) {
-  youtube.warm();
-  return asyncView(() => youtube.artist(params[0]), (artist) => {
-    const list = trackList(scroller, artist.songs);
-    return {
-      parts: [list],
-      nodes: [
-        pageHead(artist.title, 'On YouTube Music', artist.songs.length > 1 && button('Shuffle top songs', () => player.playList(artist.songs, 0, { shuffle: true }))),
-        artist.songs.length ? h('section', { class: 'shelf' }, h('h2', {}, 'Top songs'), list.el) : null,
-        ...artist.shelves.map((s) => shelf(s.title, s.items)),
-      ].filter(Boolean),
-    };
-  }, { needsApple: false });
+function artistHead(artist, tracks) {
+  const playable = tracks.filter((t) => t.playable !== false);
+  const facts = [artist.genres.slice(0, 2).join(', '), artist.audience,
+    artist.subscribers && `${artist.subscribers} subscribers`].filter(Boolean).join(' · ');
+  // The "About" text is cut to three lines until it is clicked.
+  const about = artist.about && h('p', {
+    class: 'detail-desc artist-about', title: 'Show all',
+    onclick: (e) => { e.currentTarget.classList.toggle('is-open'); e.currentTarget.title = ''; },
+  }, artist.about);
+  return h('header', { class: 'detail-head artist-head' },
+    h('div', { class: 'detail-art' }, cover(artist.art, 240, { lazy: false })),
+    h('div', { class: 'detail-text' },
+      h('p', { class: 'quiet' }, 'Artist'),
+      h('h1', { class: artist.name.length > 38 ? 'is-long' : '' }, artist.name),
+      facts && h('p', { class: 'quiet' }, facts),
+      about,
+      artist.aboutFrom && h('p', { class: 'quiet artist-credit' }, artist.aboutFrom),
+      h('div', { class: 'detail-actions' },
+        h('button', { class: 'btn primary', disabled: !playable.length, onclick: () => player.playList(tracks, 0, { shuffle: false }) },
+          h('span', { class: 'btn-icon', icon: 'play' }), 'Play'),
+        h('button', { class: 'btn', disabled: playable.length < 2, onclick: () => player.playList(tracks, 0, { shuffle: true }) },
+          h('span', { class: 'btn-icon', icon: 'shuffle' }), 'Shuffle'))));
 }
 
 // ---- Search -------------------------------------------------------------------------------------
@@ -1323,9 +1327,9 @@ export const routes = {
   'album/l': localAlbumView,
   'album/a': appleAlbumView,
   'playlist/a': applePlaylistView,
-  'artist/l': localArtistView,
-  'artist/a': appleArtistView,
+  'artist/l': artistView('l'),
+  'artist/a': artistView('a'),
   'album/y': youtubeAlbumView,
   'playlist/y': youtubePlaylistView,
-  'artist/y': youtubeArtistView,
+  'artist/y': artistView('y'),
 };

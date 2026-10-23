@@ -137,6 +137,17 @@ artist shows where it is really coming from. `match.js` decides what counts as t
 recording: the title, the artist and the length all have to be convincing. If nothing convincing
 turns up, the song fails as before.
 
+## Artists
+
+An artist has one page, whether it is opened from Apple Music, YouTube Music, an album on this PC,
+the artist's name under the song playing, or "Go to artist" on a song. `artist.js` puts it
+together from both services: Apple Music gives the photo, the genre, the top songs, similar
+artists and the discography, with albums, EPs, singles, live albums and compilations apart (when
+Apple Music isn't set up, YouTube Music's shelves stand in); YouTube Music gives the "About" text
+and how many people listen. The artist is found on the other service by the same name or, for a
+name written another way there, by who sings the same top songs. Albums by the artist on this PC
+come first.
+
 ## Lyrics
 
 The speech-bubble button beside the song playing opens its lyrics. The line being sung lights up

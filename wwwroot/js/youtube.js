@@ -5,7 +5,7 @@
 
 import { get, post } from './api.js';
 import { prefs } from './prefs.js';
-import { bestMatch } from './match.js';
+import { bestMatch, sameName } from './match.js';
 import { shareLink, toast } from './ui.js';
 import { englishTitle } from './apple.js';
 
@@ -172,7 +172,8 @@ function toSong(row, known = {}) {
   if (!videoId) return null;
 
   const others = runs.slice((columns[0]?.runs || []).length);
-  let artists = others.filter((run) => isArtistPage(pageOf(run.navigationEndpoint))).map((run) => run.text);
+  const artistRuns = others.filter((run) => isArtistPage(pageOf(run.navigationEndpoint)));
+  let artists = artistRuns.map((run) => run.text);
   const albumRun = others.find((run) => pageOf(run.navigationEndpoint) === 'MUSIC_PAGE_TYPE_ALBUM');
   if (!artists.length && !known.artist) {
     // Artists without a page of their own are plain text: the first thing on the line that isn't a fact.
@@ -187,6 +188,7 @@ function toSong(row, known = {}) {
     youtubeId: videoId,
     title: textOf(columns[0]) || 'Untitled',
     artist: artists.join(', ') || known.artist || '',
+    artistId: artistRuns[0]?.navigationEndpoint.browseEndpoint.browseId || null,
     album: albumRun?.text || known.album || '',
     albumHref: albumRun ? `#/album/y/${encodeURIComponent(albumRun.navigationEndpoint.browseEndpoint.browseId)}` : known.albumHref || null,
     duration: runs.map((run) => seconds(run.text)).find(Boolean) || 0,
@@ -444,5 +446,20 @@ export async function artist(id) {
     items: findAll(shelf.contents, 'musicTwoRowItemRenderer').map(toCard).filter(Boolean),
   })).filter((shelf) => shelf.title && shelf.items.length);
 
-  return { id, title: name, art: artOf(head.thumbnail), songs, shelves };
+  // The "About" text is often Wikipedia's, with a line saying so at the end.
+  const about = textOf(head.description).trim();
+  const credit = about.match(/\n+(From Wikipedia\b.*)$/s);
+  return {
+    id, title: name, art: artOf(head.thumbnail), songs, shelves,
+    about: credit ? about.slice(0, credit.index).trim() : about,
+    aboutFrom: credit ? 'From Wikipedia' : null,
+    audience: textOf(head.monthlyListenerCount),
+    subscribers: textOf(findAll(head, 'subscriberCountText')[0]),
+  };
+}
+
+/** The YouTube Music artist going by `name`, or null. Only the same name counts. */
+export async function findArtist(name) {
+  const answer = await call('search', { query: name, params: ONLY.artists });
+  return rowsOf(answer).map(toCard).find((item) => item?.href.includes('#/artist/') && sameName(item.title, name))?.id || null;
 }

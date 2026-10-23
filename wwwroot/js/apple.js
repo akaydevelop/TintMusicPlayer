@@ -2,7 +2,7 @@
 // the DRM; this module loads it on demand and turns its responses into the app's plain objects.
 
 import { get } from './api.js';
-import { bestMatch } from './match.js';
+import { bestMatch, sameName } from './match.js';
 
 const MUSICKIT_URL = 'https://js-cdn.music.apple.com/musickit/v3/musickit.js';
 
@@ -19,6 +19,14 @@ export const getProblem = () => problem;
 export const isSignedIn = () => !!music?.isAuthorized;
 export const onChange = (fn) => { listeners.add(fn); return () => listeners.delete(fn); };
 const changed = () => listeners.forEach((fn) => fn());
+
+/** Resolves once MusicKit has finished setting up (or failed to), straight away if it isn't. */
+export function settled() {
+  if (status !== 'loading') return Promise.resolve();
+  return new Promise((resolve) => {
+    const stop = onChange(() => { if (status !== 'loading') { stop(); resolve(); } });
+  });
+}
 
 function loadMusicKit() {
   if (window.MusicKit) return Promise.resolve();
@@ -348,6 +356,52 @@ export async function artist(id) {
     albums: (views['full-albums']?.data || []).map(toAlbum),
     singles: (views.singles?.data || []).map(toAlbum),
   };
+}
+
+/**
+ * Everything an artist profile takes from Apple Music: the photo, the genres, the top songs and the
+ * whole discography, with albums, EPs and singles apart (Apple lists EPs among the singles, with
+ * " - EP" after the name), then live albums, compilations and similar artists.
+ */
+export async function artistProfile(id) {
+  const base = `/v1/catalog/{{storefrontId}}/artists/${id}`;
+  const res = await call(base, { views: 'top-songs,full-albums,singles,live-albums,compilation-albums,similar-artists' });
+  const r = res.data[0];
+  const views = r.views || {};
+  // A view brings its first few; the rest of a long one is fetched in full.
+  const whole = async (name) => {
+    if (!views[name]?.next) return views[name]?.data || [];
+    let rows = [];
+    await eachPage(`${base}/view/${name}`, {}, (items) => { rows = rows.concat(items); }, { max: 500 });
+    return rows;
+  };
+  const [albums, singles, live, compilations] = await Promise.all(['full-albums', 'singles', 'live-albums', 'compilation-albums'].map(whole));
+  const releases = singles.map(toAlbum);
+  const plainTitle = (album) => ({ ...album, title: album.title.replace(/ - (EP|Single)$/, '') });
+  return {
+    ...toArtist(r),
+    genres: r.attributes?.genreNames || [],
+    songs: (views['top-songs']?.data || []).filter(isSong).map(toSong),
+    albums: albums.map(toAlbum),
+    eps: releases.filter((a) => / - EP$/.test(a.title)).map(plainTitle),
+    singles: releases.filter((a) => !/ - EP$/.test(a.title)).map(plainTitle),
+    live: live.map(toAlbum),
+    compilations: compilations.map(toAlbum),
+    similar: (views['similar-artists']?.data || []).map(toArtist),
+  };
+}
+
+/** The Apple Music artist going by `name`, or null. Only the same name counts. */
+export async function findArtist(name) {
+  const res = await call('/v1/catalog/{{storefrontId}}/search', { term: name, types: 'artists', limit: 10 });
+  return (res.results?.artists?.data || []).find((r) => sameName(r.attributes?.name, name))?.id || null;
+}
+
+/** The Apple Music artist of a catalog song, or null. */
+export async function artistOfSong(song) {
+  if (!/^\d+$/.test(song?.appleId || '')) return null;
+  const res = await call(`/v1/catalog/{{storefrontId}}/songs/${song.appleId}`, { include: 'artists' });
+  return res.data?.[0]?.relationships?.artists?.data?.[0]?.id || null;
 }
 
 export async function search(term) {

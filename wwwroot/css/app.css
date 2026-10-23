@@ -238,6 +238,8 @@ input, textarea, select { font: inherit; color: inherit; }
 .deck-by { display: flex; align-items: center; gap: 6px; margin-top: 3px; min-width: 0; color: var(--dim); }
 #deck-title-english { margin: 5px 0 0; color: var(--dim); font: 400 13px/1.4 var(--text); overflow-wrap: anywhere; }
 #deck-artist { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#deck-artist.is-link { cursor: pointer; }
+#deck-artist.is-link:hover { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
 .source-icon { display: grid; flex: none; }
 .source-icon svg { width: 16px; height: 16px; }
 
@@ -593,6 +595,13 @@ a.detail-by:hover { text-decoration: underline; text-underline-offset: 3px; }
 .detail-desc { max-width: 68ch; margin-top: 8px; color: var(--dim); font-size: 13px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .detail-actions { display: flex; align-items: center; gap: 10px; margin-top: 18px; }
 .disc { margin-top: 22px; }
+
+/* An artist is shown in a circle, on its page and on cards. */
+.artist-head .detail-art .cover, .card[href*="#/artist/"] .cover { border-radius: 50%; }
+.artist-about { cursor: pointer; white-space: pre-line; }
+.artist-about.is-open { display: block; cursor: auto; }
+.artist-credit { margin-top: 4px; font-size: 12px; }
+.artist-from { margin-top: 34px; font-size: 12px; }
 
 @container (max-width: 620px) {
   .detail-head { flex-direction: column; align-items: flex-start; gap: 18px; }

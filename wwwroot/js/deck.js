@@ -7,6 +7,7 @@ import { prefs, onChange as onPrefs } from './prefs.js';
 import { post } from './api.js';
 import { $, h, icon, fmtTime, artSrc, cover, toast, replay, showMenu } from './ui.js';
 import { linkFor, share } from './youtube.js';
+import { artistHref } from './artist.js';
 import { paletteOf, themeFrom, applyTheme, IDLE_THEME } from './palette.js';
 
 const QUEUE_ROWS = 80;
@@ -67,6 +68,15 @@ export function initDeck() {
   els['b-repeat'].addEventListener('click', player.cycleRepeat);
   els['b-clear'].addEventListener('click', player.clearUpcoming);
   els['b-expand'].addEventListener('click', () => post('/api/mini', { on: false }).catch(() => {}));
+  const toArtist = () => {
+    const track = player.current();
+    if (!track?.artist) return;
+    if (getComputedStyle($('browse')).display === 'none') post('/api/mini', { on: false }).catch(() => {});
+    location.hash = artistHref(track);
+  };
+  els['deck-artist'].setAttribute('role', 'link');
+  els['deck-artist'].addEventListener('click', toArtist);
+  els['deck-artist'].addEventListener('keydown', (e) => { if (e.key === 'Enter') toArtist(); });
   // Right-clicking the song playing offers its YouTube Music link too.
   for (const part of [els['deck-art'], els['deck-title'].closest('.deck-text')]) {
     part.addEventListener('contextmenu', (e) => {
@@ -141,6 +151,9 @@ function drawTrack() {
   const track = player.current();
   els['deck-title'].textContent = track ? track.title : 'Nothing playing';
   els['deck-artist'].textContent = track ? track.artist : 'Choose an album or a song to start.';
+  els['deck-artist'].classList.toggle('is-link', !!track?.artist);
+  els['deck-artist'].tabIndex = track?.artist ? 0 : -1;
+  els['deck-artist'].title = track?.artist ? `Go to ${track.artist}` : '';
   els['deck-title'].title = track ? track.title : '';
   els['b-share'].hidden = !track;
   els['b-lyrics'].hidden = !track;
