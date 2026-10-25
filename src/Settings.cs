@@ -29,6 +29,11 @@ sealed class Settings
     /// <summary>"page" plays YouTube songs in the site's own player, kept open out of sight; "ytdlp" always fetches them with yt-dlp.</summary>
     public string YouTubePlayer { get; set; } = "page";
 
+    /// <summary>How long playing and pausing fade in and out, in milliseconds (0 cuts straight away).</summary>
+    public int PauseFadeMs { get; set; } = 150;
+    /// <summary>How long a skipped song fades into the next, in milliseconds (0 cuts straight away).</summary>
+    public int CrossfadeMs { get; set; } = 800;
+
     public int[]? Bounds { get; set; }
     public bool Maximized { get; set; }
 

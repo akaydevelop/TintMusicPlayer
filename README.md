@@ -137,6 +137,14 @@ artist shows where it is really coming from. `match.js` decides what counts as t
 recording: the title, the artist and the length all have to be convincing. If nothing convincing
 turns up, the song fails as before.
 
+## Fades
+
+Playing and pausing fade the sound in and out (150 ms to start with), and moving to another song
+while one plays crossfades into it (800 ms). Settings, under Playback, sets both, or turns them
+off at 0. Files and songs fetched with yt-dlp cross over each other on two `<audio>` elements, as
+does any skip from one service to another. MusicKit and the YouTube Music page each sound one
+song at a time, so between two of their own songs the last fades out and then the next fades in.
+
 ## Artists
 
 An artist has one page, whether it is opened from Apple Music, YouTube Music, an album on this PC,

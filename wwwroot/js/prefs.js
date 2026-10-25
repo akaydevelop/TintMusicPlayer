@@ -9,6 +9,8 @@ export const prefs = {
   discord: { enabled: false, appId: '' },
   youtube: false,
   youtubePlayer: 'page', // page | ytdlp
+  pauseFadeMs: 150,  // how long playing and pausing fade in and out
+  crossfadeMs: 800,  // how long a skipped song fades into the next
 };
 
 const listeners = new Set();

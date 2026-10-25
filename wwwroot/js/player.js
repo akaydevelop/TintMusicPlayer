@@ -8,7 +8,11 @@ import * as youtube from './youtube.js';
 import { toast } from './ui.js';
 import { prefs } from './prefs.js';
 
-const audio = document.getElementById('audio');
+// Two elements, so a skipped song can fade out on one while the next fades in on the other.
+const players = [document.getElementById('audio'), document.createElement('audio')];
+players[1].preload = 'auto';
+players[0].after(players[1]);
+let audio = players[0]; // the one playing the current song
 
 export const state = {
   queue: [],
@@ -40,6 +44,64 @@ let appleChain = Promise.resolve();
 let appleBusy = false;
 let appleWired = null;
 
+// ---- fades --------------------------------------------------------------------------------------
+// Each engine sounds at Tint's volume times a gain of its own, which fades move between 0 and 1.
+// The YouTube Music page does its own fading, being told how long to take (see youtube-page.js).
+
+const level = () => (state.muted ? 0 : state.volume);
+// Equal power, so two songs crossing don't dip in loudness halfway.
+const curve = (gain) => Math.sin(gain * Math.PI / 2);
+
+function fader(apply) {
+  let gain = 1;
+  let run = 0;
+  const self = {
+    apply: () => apply(level() * curve(gain)),
+    /** Fades to `target` in `ms` for the whole way (part of the way takes part of the time). True once there, false if overtaken. */
+    to(target, ms) {
+      const my = ++run;
+      const from = gain;
+      const span = ms * Math.abs(target - from);
+      const began = performance.now();
+      return new Promise((resolve) => {
+        // Worked out from the clock, so a late timer only makes the fade coarser, never longer.
+        const step = () => {
+          if (my !== run) return resolve(false);
+          const t = span > 0 ? Math.min(1, (performance.now() - began) / span) : 1;
+          gain = from + (target - from) * t;
+          self.apply();
+          if (t < 1) setTimeout(step, 10);
+          else resolve(true);
+        };
+        step();
+      });
+    },
+  };
+  return self;
+}
+
+const gains = new Map(players.map((el) => [el, fader((v) => { el.volume = v; })]));
+const localGain = () => gains.get(audio);
+const appleGain = fader((v) => { const music = apple.instance(); if (music) music.volume = v; });
+
+let blend = 0;       // the crossfade the song being started gets, used up by the first engine to hand over
+let rise = 0;        // and how long it fades in over
+let fadeIn = null;   // { my, ms }: fade the song in once it is actually sounding
+let pausing = false; // a pause is fading out and hasn't reached the engine yet
+
+/** The new song starts silent and fades in over `ms`, or at full volume when that is 0. */
+function startQuiet(my, gain, ms) {
+  gain.to(ms ? 0 : 1, 0);
+  fadeIn = ms ? { my, ms } : null;
+}
+
+/** The engine has started sounding: carry out a fade-in waiting for that. */
+function sounding(gain) {
+  if (fadeIn?.my !== session) return;
+  gain.to(1, fadeIn.ms);
+  fadeIn = null;
+}
+
 /** Pauses MusicKit without caring whether it had anything to pause. */
 function hushApple() {
   try { apple.instance()?.pause()?.catch?.(() => {}); } catch { /* nothing was playing */ }
@@ -51,11 +113,27 @@ const tellPage = (ask) => window.chrome?.webview?.postMessage({ to: 'youtube', .
 // If this page is loaded afresh while the site's player is going, nothing would be left in charge of it.
 tellPage({ do: 'stop' });
 
-/** Stops whichever engine was playing, when a different one is about to. */
+/** Stops whichever engine was playing, when a different one is about to: at once, or fading out across a skip. */
 function hushOthers(next) {
+  const ms = blend;
+  blend = 0;
+  if (engine === 'local' && ms) {
+    // The song fades out on its own element, and the next one plays on the other.
+    const old = audio;
+    audio = players.find((el) => el !== old);
+    gains.get(old).to(0, ms).then((done) => {
+      if (!done || old === audio) return;
+      old.pause();
+      old.removeAttribute('src');
+      old.load();
+    });
+    return;
+  }
   if (engine === next) return;
-  if (engine === 'apple') hushApple();
-  else if (engine === 'page') tellPage({ do: 'stop' });
+  if (engine === 'apple') {
+    if (ms) appleGain.to(0, ms).then((done) => { if (done && engine !== 'apple') hushApple(); });
+    else hushApple();
+  } else if (engine === 'page') tellPage({ do: 'stop', fade: ms });
   else if (engine === 'local') audio.pause();
 }
 
@@ -116,9 +194,13 @@ async function playElsewhere(my, track, message, options) {
   start(state.index);
 }
 
-function start(index, autoplay = true) {
+/** `skip`: someone moving to another song, which crossfades from one still playing. `fadeUp`: fade in as playing does. */
+function start(index, { autoplay = true, skip = false, fadeUp = false } = {}) {
   const track = state.queue[index];
   if (!track) return;
+  blend = skip && autoplay && engine && state.playing && !state.loading ? prefs.crossfadeMs || 0 : 0;
+  rise = blend || (fadeUp && autoplay ? prefs.pauseFadeMs || 0 : 0);
+  pausing = false;
   const my = ++session;
   state.index = index;
   state.time = 0;
@@ -137,8 +219,10 @@ function start(index, autoplay = true) {
   }
 
   if (track.source === 'local') {
+    const ms = rise;
     hushOthers('local');
     engine = 'local';
+    startQuiet(my, localGain(), ms);
     audio.src = `media/${track.fileId}`;
     if (autoplay) audio.play().catch((e) => { if (e?.name !== 'AbortError') fail(my, "This file couldn't be played."); });
     return;
@@ -156,6 +240,9 @@ function start(index, autoplay = true) {
     return playElsewhere(my, track, "Apple's servers are blocking explicit songs for your account.", {});
   }
 
+  // MusicKit sounds one song at a time, so across a skip from one of its own the last fades out first.
+  const ms = rise;
+  const quiet = blend && engine === 'apple' ? appleGain.to(0, blend) : null;
   hushOthers('apple');
   engine = 'apple';
   const music = apple.instance();
@@ -166,7 +253,9 @@ function start(index, autoplay = true) {
   wireApple(music);
   // MusicKit doesn't like overlapping queue changes, so quick skips are fed to it one at a time.
   appleChain = appleChain.then(async () => {
+    await quiet;
     if (my !== session) return;
+    startQuiet(my, appleGain, ms);
     appleBusy = true;
     try {
       await music.setQueue({ song: track.appleId, startPlaying: autoplay });
@@ -196,6 +285,7 @@ let reloadedPage = false;
 const usesPage = (track) => prefs.youtubePlayer !== 'ytdlp' && youtube.isSignedIn() && !!window.chrome?.webview && !notOnPage.has(track);
 
 function startOnPage(my, track) {
+  const ms = rise;
   hushOthers('page');
   engine = 'page';
   clearTimeout(pageTimer);
@@ -205,7 +295,7 @@ function startOnPage(my, track) {
     if (my !== session) return;
     if (!open) return leavePage(my, track);
     tellPage({ do: 'volume', level: state.muted ? 0 : state.volume });
-    tellPage({ do: 'load', id: track.youtubeId });
+    tellPage({ do: 'load', id: track.youtubeId, fade: ms });
     pageTimer = setTimeout(() => { if (pagePlayed !== my) leavePage(my, track); }, PAGE_WAIT);
   });
 }
@@ -246,8 +336,10 @@ window.chrome?.webview?.addEventListener('message', ({ data }) => {
 });
 
 function startWithDlp(my, track, autoplay) {
+  const ms = rise;
   hushOthers('local');
   engine = 'local';
+  startQuiet(my, localGain(), ms);
   // Finding the audio takes a few seconds. The last song mustn't carry on, or come back, meanwhile.
   audio.removeAttribute('src');
   audio.load();
@@ -285,7 +377,7 @@ function wireApple(music) {
   if (appleWired === music) return;
   appleWired = music;
   const S = window.MusicKit.PlaybackStates;
-  music.volume = state.muted ? 0 : state.volume;
+  appleGain.apply();
 
   music.addEventListener('playbackStateDidChange', ({ state: s }) => {
     if (engine !== 'apple') return;
@@ -293,9 +385,10 @@ function wireApple(music) {
       if (!appleBusy) finished();
       return;
     }
+    if (pausing) return; // still sounding while it fades, but as far as anyone can tell it has paused
     state.playing = s === S.playing;
     state.loading = s === S.loading || s === S.waiting || s === S.stalled || s === S.seeking;
-    if (state.playing) { failures = 0; state.error = null; }
+    if (state.playing) { failures = 0; state.error = null; sounding(appleGain); }
     emit('state');
   });
 
@@ -313,35 +406,36 @@ function wireApple(music) {
 
 // ---- local engine events ------------------------------------------------------------------------
 
-audio.addEventListener('playing', () => {
-  if (engine !== 'local') return;
+/** Listens to both elements, but only hears from the one playing the current song. */
+const onAudio = (name, fn) => players.forEach((el) => el.addEventListener(name, () => { if (el === audio && engine === 'local') fn(); }));
+
+onAudio('playing', () => {
   failures = 0;
   state.playing = true; state.loading = false; state.error = null;
+  sounding(localGain());
   emit('state');
 });
-audio.addEventListener('pause', () => {
-  if (engine !== 'local' || audio.ended) return;
+onAudio('pause', () => {
+  if (audio.ended) return;
   state.playing = false;
   emit('state');
 });
-audio.addEventListener('waiting', () => {
-  if (engine !== 'local') return;
+onAudio('waiting', () => {
   state.loading = true;
   emit('state');
 });
-audio.addEventListener('timeupdate', () => {
-  if (engine !== 'local') return;
+onAudio('timeupdate', () => {
   state.time = audio.currentTime;
   emit('time');
 });
-audio.addEventListener('durationchange', () => {
-  if (engine !== 'local' || !Number.isFinite(audio.duration)) return;
+onAudio('durationchange', () => {
+  if (!Number.isFinite(audio.duration)) return;
   state.duration = audio.duration;
   emit('time');
 });
-audio.addEventListener('ended', () => { if (engine === 'local') finished(); });
-audio.addEventListener('error', () => {
-  if (engine !== 'local' || !audio.getAttribute('src')) return;
+onAudio('ended', () => finished());
+onAudio('error', () => {
+  if (!audio.getAttribute('src')) return;
   if (current()?.source === 'youtube') refetch();
   else fail(session, "This file couldn't be played. It may have moved, or be in a format Windows can't decode.");
 });
@@ -395,29 +489,49 @@ function advance(auto) {
     }
     next = 0;
   }
-  start(next);
+  start(next, { skip: !auto });
 }
 
 export const next = () => advance(false);
 
 export function prev() {
   if (state.time > 3 || state.index <= 0) return seek(0);
-  start(state.index - 1);
+  start(state.index - 1, { skip: true });
 }
 
 export function toggle() {
   const track = current();
   if (!track) return;
-  if (!engine || state.error) return start(state.index);
-  if (engine === 'local') {
-    if (audio.paused) audio.play().catch(() => {});
-    else audio.pause();
-  } else if (engine === 'page') {
-    tellPage({ do: state.playing || state.loading ? 'pause' : 'play' });
+  if (!engine || state.error) return start(state.index, { fadeUp: true });
+  const ms = prefs.pauseFadeMs || 0;
+  if (engine === 'page') return tellPage({ do: state.playing || state.loading ? 'pause' : 'play', fade: ms });
+
+  const music = apple.instance();
+  if (engine === 'apple' && !music) return;
+  const local = engine === 'local';
+  const gain = local ? localGain() : appleGain;
+  if (local ? !audio.paused && !pausing : state.playing) {
+    // Shown as paused straight away; the engine itself is paused once the fade is over.
+    const my = session;
+    pausing = true;
+    state.playing = false;
+    emit('state');
+    gain.to(0, ms).then((done) => {
+      if (!done || my !== session || !pausing) return;
+      pausing = false;
+      if (local) audio.pause();
+      else music.pause()?.catch?.(() => {});
+    });
+  } else if (pausing) {
+    // Played again before the pause took hold: it never stopped, so it only needs to come back up.
+    pausing = false;
+    state.playing = true;
+    emit('state');
+    gain.to(1, ms);
   } else {
-    const music = apple.instance();
-    if (!music) return;
-    (state.playing ? music.pause() : music.play())?.catch?.((e) => fail(session, appleMessage(e)));
+    startQuiet(session, gain, ms);
+    if (local) audio.play().catch(() => {});
+    else music.play()?.catch?.((e) => fail(session, appleMessage(e)));
   }
 }
 
@@ -432,7 +546,7 @@ export function seek(seconds) {
 }
 
 export function jumpTo(index) {
-  if (index >= 0 && index < state.queue.length) start(index);
+  if (index >= 0 && index < state.queue.length) start(index, { skip: true });
 }
 
 // ---- building the queue -------------------------------------------------------------------------
@@ -463,12 +577,12 @@ export function playList(tracks, startIndex = 0, { shuffle = null } = {}) {
     const lead = shuffle === true ? shuffled(tracks) : [first, ...shuffled(rest)];
     state.queue = lead;
     emit('queue');
-    start(0);
+    start(0, { skip: true });
   } else {
     unshuffled = null;
     state.queue = tracks.slice();
     emit('queue');
-    start(tracks.indexOf(first));
+    start(tracks.indexOf(first), { skip: true });
   }
 }
 
@@ -541,11 +655,9 @@ export function cycleRepeat() {
 export function setVolume(volume, { muted = false } = {}) {
   state.volume = Math.max(0, Math.min(1, volume));
   state.muted = muted;
-  const level = muted ? 0 : state.volume;
-  audio.volume = level;
-  const music = apple.instance();
-  if (music) music.volume = level;
-  if (engine === 'page') tellPage({ do: 'volume', level });
+  for (const gain of gains.values()) gain.apply();
+  appleGain.apply();
+  if (engine === 'page') tellPage({ do: 'volume', level: level() });
   emit('volume');
   save();
 }
@@ -594,6 +706,6 @@ export function restore() {
       }
     }
   } catch { /* a damaged save is just ignored */ }
-  audio.volume = state.muted ? 0 : state.volume;
+  for (const gain of gains.values()) gain.apply();
   emit('queue'); emit('track'); emit('modes'); emit('volume'); emit('state');
 }

@@ -1271,6 +1271,33 @@ function settingsView() {
           'For songs stored on this PC, the cover is found by looking up the album name in Apple\'s public catalog.')));
   }
 
+  /** A slider for a length of time, saved when let go. */
+  function duration(label, hint, key, max, step) {
+    const said = (ms) => (ms === 0 ? 'Off' : ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`);
+    const value = h('span', { class: 'quiet' }, said(prefs[key]));
+    const show = (input) => {
+      input.style.setProperty('--fill', `${(input.value / max) * 100}%`);
+      value.textContent = said(Number(input.value));
+    };
+    const input = h('input', {
+      type: 'range', class: 'slider', min: 0, max, step, value: prefs[key], 'aria-label': label,
+      oninput: (e) => show(e.target),
+      onchange: (e) => savePrefs({ [key]: Number(e.target.value) }),
+    });
+    show(input);
+    return h('div', { class: 'duration' },
+      h('div', { class: 'duration-head' }, h('span', { class: 'field-label' }, label), value),
+      input,
+      h('span', { class: 'quiet field-hint' }, hint));
+  }
+
+  function playbackSection() {
+    return h('section', { class: 'panel' },
+      h('h2', {}, 'Playback'),
+      duration('Fade when playing and pausing', 'A short fade instead of the sound cutting in and out.', 'pauseFadeMs', 1000, 10),
+      duration('Crossfade when skipping', 'How long a song you skip fades into the next. Two Apple Music songs, or two from the YouTube Music player, fade one after the other rather than over each other, since each of those players sounds one song at a time.', 'crossfadeMs', 5000, 100));
+  }
+
   function lookSection() {
     return h('section', { class: 'panel' },
       h('h2', {}, 'Colors'),
@@ -1306,7 +1333,7 @@ function settingsView() {
   function draw() {
     // Typing shouldn't be interrupted by a background refresh.
     if (el.contains(document.activeElement) && /INPUT|TEXTAREA/.test(document.activeElement.tagName)) return;
-    fill(el, pageHead('Settings'), foldersSection(), appleSection(), youtubeSection(), discordSection(), lookSection(), updateSection(),
+    fill(el, pageHead('Settings'), foldersSection(), appleSection(), youtubeSection(), discordSection(), playbackSection(), lookSection(), updateSection(),
       h('p', { class: 'quiet about' }, `Tint${update.getStatus() ? ' ' + update.getStatus().current : ''}. Space plays and pauses, Ctrl+Right and Ctrl+Left change songs, Ctrl+F searches.`));
   }
 

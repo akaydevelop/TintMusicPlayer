@@ -546,6 +546,8 @@ sealed class LocalServer : IDisposable
         discord = new { enabled = _settings.DiscordEnabled, appId = _settings.DiscordAppId ?? "" },
         youtube = _settings.YouTubeEnabled,
         youtubePlayer = _settings.YouTubePlayer,
+        pauseFadeMs = _settings.PauseFadeMs,
+        crossfadeMs = _settings.CrossfadeMs,
         apple = new
         {
             teamId = _settings.AppleTeamId ?? "",
@@ -571,6 +573,8 @@ sealed class LocalServer : IDisposable
         if (o["keepDark"] is JsonValue keepDark) _settings.KeepDark = keepDark.GetValue<bool>();
         if (o["youtube"] is JsonValue youtube) _settings.YouTubeEnabled = youtube.GetValue<bool>();
         if (o["youtubePlayer"] is JsonValue youtubePlayer) _settings.YouTubePlayer = youtubePlayer.GetValue<string>() == "ytdlp" ? "ytdlp" : "page";
+        if (o["pauseFadeMs"] is JsonValue pauseFade) _settings.PauseFadeMs = Math.Clamp(pauseFade.GetValue<int>(), 0, 1000);
+        if (o["crossfadeMs"] is JsonValue crossfade) _settings.CrossfadeMs = Math.Clamp(crossfade.GetValue<int>(), 0, 5000);
         if (o["appleTeamId"] is JsonValue team) _settings.AppleTeamId = team.GetValue<string>().Trim();
         if (o["appleKeyId"] is JsonValue keyId) _settings.AppleKeyId = keyId.GetValue<string>().Trim();
         if (o["appleToken"] is JsonValue token)

@@ -50,6 +50,32 @@
   let level = null;     // how loud Tint wants it, 0 to 100
   let holding = false;  // Tint asked for a pause
   let watching = 0;
+  let gain = 1;         // where a fade has the volume, 0 to 1, as a share of Tint's level
+  let fading = 0;
+  let fadeIn = 0;       // how long the song asked for fades in over, once it is playing
+  let queued = null;    // starts the song asked for, once the last has faded out
+
+  // Equal power, the same as Tint's own fades, so a crossfade from here matches one from there.
+  const loudness = () => (level === null ? null : Math.round(level * Math.sin(gain * Math.PI / 2)));
+
+  /** Moves the volume to `to` over `ms` (for the whole way), then calls `then`, unless another fade takes over. */
+  function fade(to, ms, then) {
+    const my = ++fading;
+    const from = gain;
+    const span = (Number(ms) || 0) * Math.abs(to - from);
+    const began = Date.now();
+    const step = () => {
+      if (my !== fading) return;
+      const t = span > 0 ? Math.min(1, (Date.now() - began) / span) : 1;
+      gain = from + (to - from) * t;
+      const p = player();
+      const loud = loudness();
+      if (p && loud !== null) p.setVolume(loud);
+      if (t < 1) setTimeout(step, 10);
+      else then?.();
+    };
+    step();
+  }
 
   function monitor(on) {
     if (on && !watching) watching = setInterval(watch, 200);
@@ -102,7 +128,9 @@
     seen = true;
     if (finished) return;
     // The site keeps a volume of its own and puts it back with each song. Tint's is the one that counts.
-    if (level !== null && p.getVolume() !== level) p.setVolume(level);
+    const loud = loudness();
+    if (loud !== null && p.getVolume() !== loud) p.setVolume(loud);
+    if (state === 1 && fadeIn && !holding) { fade(1, fadeIn); fadeIn = 0; }
     // With nobody having clicked in this page, the site loads a song and then waits to be told to play it.
     if ((state === -1 || state === 5) && !holding) p.playVideo();
     if (state === 0) {
@@ -114,7 +142,8 @@
 
     const now = {
       is: 'state', id,
-      state: state === 1 ? 'playing' : state === 2 ? 'paused' : 'loading',
+      // A pause still fading out is a pause already, as far as Tint is concerned.
+      state: holding || state === 2 ? 'paused' : state === 1 ? 'playing' : 'loading',
       time: Math.round(p.getCurrentTime() * 4) / 4,
       duration: Math.round(p.getDuration() || 0),
       format: state === 1 ? format(p) : null,
@@ -132,38 +161,65 @@
     const p = player();
     if (!ask || ask.to !== 'youtube' || !p) return;
 
+    // A song waiting on the last one's fade starts now if it is played, paused or moved; not if it was replaced.
+    if (queued && ask.do !== 'volume') {
+      const go = queued;
+      queued = null;
+      if (ask.do !== 'load' && ask.do !== 'stop') go();
+    }
+
     if (ask.do === 'load' && /^[A-Za-z0-9_-]{11}$/.test(ask.id)) {
-      const again = p.getVideoData()?.video_id === ask.id;
-      wanted = ask.id;
-      seen = again;
-      finished = false;
-      holding = false;
-      monitor(true);
-      asked = 0;
-      told = '';
-      // The song that is already loaded (repeat, or the same one picked again) only needs rewinding.
-      if (again) { p.seekTo(0, true); p.playVideo(); }
-      else open(ask.id);
+      const ms = Number(ask.fade) || 0;
+      const go = () => {
+        const again = p.getVideoData()?.video_id === ask.id;
+        wanted = ask.id;
+        fadeIn = ms;
+        seen = again;
+        finished = false;
+        holding = false;
+        monitor(true);
+        asked = 0;
+        told = '';
+        // The song that is already loaded (repeat, or the same one picked again) only needs rewinding.
+        if (again) { p.seekTo(0, true); p.playVideo(); }
+        else open(ask.id);
+      };
+      // Across a skip the last song fades out first, as this player sounds one at a time, and the new one fades in.
+      if (ms && wanted && !holding && !finished && p.getPlayerState() === 1) {
+        queued = go;
+        fade(0, ms, () => { if (queued === go) { queued = null; go(); watch(); } });
+      } else {
+        fade(ms ? 0 : 1, 0);
+        go();
+      }
     } else if (ask.do === 'play') {
       // Playing a finished song again starts it over.
       if (finished && p.getVideoData()?.video_id === wanted) { finished = false; p.seekTo(0, true); }
       holding = false;
       monitor(true);
       p.playVideo();
+      fade(1, ask.fade);
     } else if (ask.do === 'pause') {
+      // Reported as paused at once; the player itself pauses when the fade is over.
       holding = true;
-      p.pauseVideo();
-      monitor(false);
+      fadeIn = 0;
+      fade(0, ask.fade, () => {
+        if (!holding) return;
+        player()?.pauseVideo();
+        monitor(false);
+      });
     } else if (ask.do === 'seek') {
       p.seekTo(Number(ask.at) || 0, true);
     } else if (ask.do === 'volume') {
       level = Math.round(Math.max(0, Math.min(1, Number(ask.level) || 0)) * 100);
-      p.setVolume(level);
+      p.setVolume(loudness());
       if (level > 0) p.unMute(); else p.mute();
     } else if (ask.do === 'stop') {
+      // Another engine has the next song; this one fades out under it, or stops at once.
       wanted = null;
-      p.pauseVideo();
+      fadeIn = 0;
       monitor(false);
+      fade(0, ask.fade, () => { if (!wanted) player()?.pauseVideo(); });
     }
     watch();
   });

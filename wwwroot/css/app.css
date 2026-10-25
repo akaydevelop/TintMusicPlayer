@@ -671,6 +671,10 @@ summary { color: var(--dim); font-weight: 600; font-size: 13px; cursor: pointer;
 summary:hover { color: var(--ink); }
 details .field { margin-top: 10px; }
 
+.duration { display: grid; gap: 4px; max-width: 420px; margin-top: 16px; }
+.duration-head { display: flex; justify-content: space-between; gap: 12px; }
+.duration .slider::-webkit-slider-thumb { opacity: 1; transform: none; }
+
 .check { display: flex; align-items: flex-start; gap: 12px; cursor: pointer; }
 .check input { width: 18px; height: 18px; margin: 2px 0 0; accent-color: var(--accent); }
 .check > span { display: grid; gap: 2px; }
