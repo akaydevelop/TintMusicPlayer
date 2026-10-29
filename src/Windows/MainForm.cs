@@ -97,6 +97,8 @@ sealed class MainForm : Form, IHost
             };
 
             _environment = environment;
+            // The browser starts its audio process with the first sound, and starts a new one if that one stops.
+            environment.ProcessInfosChanged += (_, _) => { if (_playing) NameInMixer(); };
             // Tint's page works the hidden YouTube Music page by messages; this is the way there.
             core.WebMessageReceived += (_, args) =>
             {
@@ -368,15 +370,17 @@ sealed class MainForm : Form, IHost
         _taskbar.Show(track != null, playing);
     }
 
-    void NameInMixer()
+    void NameInMixer() => MixerName.Claim(() => OnUi(BrowserProcesses));
+
+    List<int> BrowserProcesses()
     {
         try
         {
-            if (_environment?.GetProcessInfos() is { } processes) MixerName.Claim(processes.Select(p => p.ProcessId).ToList());
+            return _environment?.GetProcessInfos().Select(p => p.ProcessId).ToList() ?? new();
         }
         catch
         {
-            // The browser is restarting. The next song tries again.
+            return new(); // the browser is restarting
         }
     }
 

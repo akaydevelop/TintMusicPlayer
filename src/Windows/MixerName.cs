@@ -13,18 +13,19 @@ static class MixerName
     const int Render = 0, DeviceActive = 1, ClsctxAll = 0x17;
 
     /// <summary>
-    /// Names the sound sessions that belong to the given processes, on every output device. A session
-    /// only exists once sound starts, so this looks a few times over the next seconds. Any thread.
+    /// Names the sound sessions that belong to the browser's processes, on every output device. Neither
+    /// the session nor the browser's audio process exists until sound starts, and the first song can
+    /// take a while to load, so this looks again over the next half minute, asking for the processes
+    /// afresh each time. Any thread.
     /// </summary>
-    public static void Claim(IReadOnlyCollection<int> processes)
+    public static void Claim(Func<IReadOnlyCollection<int>> processes)
     {
-        if (processes.Count == 0) return;
         _ = Task.Run(async () =>
         {
-            foreach (int wait in new[] { 300, 1500, 4000 })
+            foreach (int wait in new[] { 300, 1000, 2000, 4000, 8000, 15000 })
             {
                 await Task.Delay(wait);
-                try { if (Rename(processes)) return; } catch { }
+                try { if (Rename(processes())) return; } catch { }
             }
         });
     }
