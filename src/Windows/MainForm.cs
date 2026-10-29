@@ -21,6 +21,7 @@ sealed class MainForm : Form, IHost
     SystemMedia? _media;
     YouTubePage? _youtubePage;
     long _nowPlayingAt;
+    bool _playing;
     PageBridge? _bridge;
     CoreWebView2Environment? _environment;
 
@@ -360,8 +361,23 @@ sealed class MainForm : Form, IHost
     {
         if (at < _nowPlayingAt) return; // an older report that took longer to get here
         _nowPlayingAt = at;
+        // Sound starting is when Windows lists the browser's sound in the volume mixer, under the browser's name.
+        if (playing && !_playing) NameInMixer();
+        _playing = playing;
         _media?.Show(track, playing);
         _taskbar.Show(track != null, playing);
+    }
+
+    void NameInMixer()
+    {
+        try
+        {
+            if (_environment?.GetProcessInfos() is { } processes) MixerName.Claim(processes.Select(p => p.ProcessId).ToList());
+        }
+        catch
+        {
+            // The browser is restarting. The next song tries again.
+        }
     }
 
 #if DEBUG

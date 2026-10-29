@@ -231,3 +231,4 @@ Alt+Left goes back.
 The keyboard's media keys (play/pause, next, previous) work whichever app is in front, and the
 same three buttons sit under Tint's preview on the taskbar. Windows' media panel in Quick Settings
 shows the song and its cover. Turning the mouse wheel over the volume row changes the volume.
+Windows' volume mixer lists Tint by name, with its own slider.
