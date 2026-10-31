@@ -48,6 +48,7 @@ sealed class LocalServer : IDisposable
     readonly DiscordPresence _discord;
     readonly YouTube _youtube;
     readonly Lyrics _lyrics;
+    readonly Spotify _spotify = new();
     readonly Updater _updater;
     readonly string _webRoot;
     HttpListener? _listener;
@@ -427,6 +428,18 @@ sealed class LocalServer : IDisposable
                     }
                     return;
                 }
+
+            case "spotify":
+                try
+                {
+                    await WriteJson(res, new { found = await _spotify.Find(req.QueryString["kind"] ?? "", req.QueryString["id"] ?? "") });
+                }
+                catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException)
+                {
+                    res.StatusCode = 502;
+                    await WriteJson(res, new { error = "Spotify didn't answer. Try again in a moment." });
+                }
+                return;
 
             case "system" when post:
                 {

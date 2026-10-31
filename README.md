@@ -110,6 +110,13 @@ A YouTube or YouTube Music link pasted into the search box opens that very video
 the results, followed by what a search for its title finds. Search doesn't list every video
 YouTube Music can play, so this reaches the ones it misses.
 
+A Spotify link (a song, an album or a playlist) pasted into the search box finds the same songs
+on Apple Music and YouTube Music. Tint doesn't play from Spotify or need an account there: it
+reads the titles, artists and lengths from the small player Spotify lets other sites embed
+(`Spotify.cs`), which lists a playlist's first 100 songs. A song shows its match on each service
+that has it, and an album or playlist becomes one list, each song from Apple Music where it's
+there and from YouTube Music otherwise.
+
 Signed in to Google (below), the albums, songs and playlists of your own YouTube Music library
 join the Albums, Songs and Playlists pages as a source next to this PC and Apple Music.
 

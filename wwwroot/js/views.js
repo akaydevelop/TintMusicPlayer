@@ -6,6 +6,7 @@ import { h, fill, cover, fmtTime, fmtLength, plural, showMenu, toast, replay, Vi
 import * as player from './player.js';
 import * as apple from './apple.js';
 import * as youtube from './youtube.js';
+import * as spotify from './spotify.js';
 import * as update from './update.js';
 import { local, compareText, searchLocal, nudge } from './library.js';
 import { get, post } from './api.js';
@@ -685,7 +686,10 @@ function searchView({ scroller, params }) {
   // A pasted YouTube link: the song it points at goes first, then the rest found by its name.
   const linked = youtube.videoIn(term);
   let fromLink = linked ? 'loading' : null;
-  let query = linked ? '' : term;
+  // A pasted Spotify link: the same songs found on Apple Music and YouTube Music.
+  const spotted = linked ? null : spotify.linkIn(term);
+  let fromSpotify = spotted ? 'loading' : null; // then null (nothing there), an Error, or what spotifyFound() takes
+  let query = linked || spotted ? '' : term;
   let alive = true;
 
   function draw() {
@@ -697,7 +701,7 @@ function searchView({ scroller, params }) {
     }
 
     const mine = query ? searchLocal(query) : { songs: [], albums: [] };
-    const nodes = [pageHead(linked ? 'From a YouTube link' : `Results for "${term}"`)];
+    const nodes = [pageHead(linked ? 'From a YouTube link' : spotted ? 'From a Spotify link' : `Results for "${term}"`)];
     const songList = (title, tracks) => {
       const list = trackList(scroller, tracks);
       parts.push(list);
@@ -716,13 +720,29 @@ function searchView({ scroller, params }) {
       else nodes.push(songList('On YouTube Music', [fromLink]));
     }
 
+    if (spotted) {
+      if (!apple.instance() && !youtube.isReady()) {
+        nodes.push(emptyState('Nowhere to look', "Tint can't play from Spotify. Set up Apple Music or YouTube Music in Settings, and the same songs are found there."));
+        fill(el, ...nodes);
+        return;
+      }
+      if (fromSpotify === 'loading') nodes.push(loading('Reading the Spotify link…'));
+      else if (fromSpotify instanceof Error) nodes.push(h('p', { class: 'quiet' }, `Spotify didn't answer: ${fromSpotify.message}`));
+      else if (!fromSpotify) nodes.push(emptyState('Nothing at that link', "Spotify doesn't have anything there, or it's private."));
+      else nodes.push(...spotifyFound(fromSpotify, songList));
+    }
+
+    // The songs a Spotify link was matched to are already at the top.
+    const shown = new Set(fromSpotify?.found ? [fromSpotify.apple, fromSpotify.tube].filter((song) => song?.id).map((song) => song.id) : []);
+
     if (mine.songs.length) nodes.push(songList('Songs on this PC', mine.songs));
     if (mine.albums.length) nodes.push(h('section', { class: 'shelf' }, h('h2', {}, 'Albums on this PC'), grid(mine.albums)));
 
     if (remote === 'loading') nodes.push(loading('Searching Apple Music…'));
     else if (remote instanceof Error) nodes.push(h('p', { class: 'quiet' }, `Apple Music didn't answer: ${remote.message}`));
     else if (remote) {
-      if (remote.songs.length) nodes.push(songList('Songs on Apple Music', remote.songs));
+      const songs = remote.songs.filter((song) => !shown.has(song.id));
+      if (songs.length) nodes.push(songList('Songs on Apple Music', songs));
       if (remote.albums.length) nodes.push(shelf('Albums on Apple Music', remote.albums));
       if (remote.artists.length) nodes.push(shelf('Artists', remote.artists));
       if (remote.playlists.length) nodes.push(shelf('Playlists', remote.playlists));
@@ -731,14 +751,15 @@ function searchView({ scroller, params }) {
     if (tube === 'loading') nodes.push(loading('Searching YouTube Music…'));
     else if (tube instanceof Error) nodes.push(h('p', { class: 'quiet' }, `YouTube Music didn't answer: ${tube.message}`));
     else if (tube) {
-      if (tube.songs.length) nodes.push(songList('Songs on YouTube Music', tube.songs));
+      const songs = tube.songs.filter((song) => !shown.has(song.id));
+      if (songs.length) nodes.push(songList('Songs on YouTube Music', songs));
       if (tube.albums.length) nodes.push(shelf('Albums on YouTube Music', tube.albums));
       if (tube.artists.length) nodes.push(shelf('Artists on YouTube Music', tube.artists));
     }
 
     const count = (results, ...kinds) => (results && results !== 'loading' && !(results instanceof Error)
       ? kinds.reduce((sum, kind) => sum + results[kind].length, 0) : 0);
-    const found = mine.songs.length + mine.albums.length +
+    const found = (spotted ? 1 : 0) + mine.songs.length + mine.albums.length +
       count(remote, 'songs', 'albums', 'artists', 'playlists') + count(tube, 'songs', 'albums', 'artists');
     if (!found && query && remote !== 'loading' && tube !== 'loading') {
       nodes.push(emptyState('Nothing matched', apple.instance() || tube
@@ -772,6 +793,29 @@ function searchView({ scroller, params }) {
     }, (e) => { fromLink = e instanceof Error ? e : new Error(String(e)); })
       .then(() => { if (!alive) return; lookUp(); draw(); });
   }
+  if (spotted) {
+    spotify.lookUp(spotted).then((found) => {
+      if (!found) { fromSpotify = null; return; }
+      const first = found.songs[0];
+      if (found.kind === 'track') {
+        fromSpotify = { found, apple: 'loading', tube: 'loading' };
+        // Searched by the first artist only: a song credited to three names is listed under one elsewhere.
+        query = first ? `${first.title} ${first.artist.split(',')[0]}`.trim() : '';
+        const settle = (key, finding) => finding.then((song) => { fromSpotify[key] = song; }).then(() => { if (alive) draw(); });
+        settle('apple', spotify.onApple(first));
+        settle('tube', spotify.onYouTube(first));
+      } else {
+        fromSpotify = { found, matched: null, done: 0 };
+        // An album may well be on Apple Music or YouTube Music whole, so it is searched for too.
+        if (found.kind === 'album') query = `${found.title} ${found.artist.split(',')[0]}`.trim();
+        spotify.matchAll(found.songs, (done) => {
+          fromSpotify.done = done;
+          if (alive && done % 5 === 0) draw();
+        }).then((matched) => { fromSpotify.matched = matched; if (alive) draw(); });
+      }
+    }, (e) => { fromSpotify = e instanceof Error ? e : new Error(String(e)); })
+      .then(() => { if (!alive) return; lookUp(); draw(); });
+  }
   lookUp();
   draw();
   return {
@@ -779,6 +823,45 @@ function searchView({ scroller, params }) {
     refresh: (why) => { if (why === 'track') parts.forEach((p) => p.refresh()); else if (why === 'local') draw(); },
     destroy: () => { alive = false; parts.forEach((p) => p.destroy()); },
   };
+}
+
+/** The shelves for a pasted Spotify link, from what the search page found for it so far. */
+function spotifyFound(state, songList) {
+  const { found } = state;
+  const nodes = [];
+  if (found.kind === 'track') {
+    const song = found.songs[0];
+    const named = song ? `"${song.title}" by ${song.artist}` : 'This song';
+    const pending = (state.apple === 'loading' && apple.instance()) || (state.tube === 'loading' && youtube.isReady());
+    if (state.apple && state.apple !== 'loading') nodes.push(songList('On Apple Music', [state.apple]));
+    if (state.tube && state.tube !== 'loading') nodes.push(songList('On YouTube Music', [state.tube]));
+    if (pending) nodes.push(loading(`Looking for ${named}…`));
+    else if (!nodes.length) nodes.push(emptyState('Not found', `${named} wasn't found on ${[apple.instance() && 'Apple Music', youtube.isReady() && 'YouTube Music'].filter(Boolean).join(' or ')}. Anything close is below.`));
+    return nodes;
+  }
+
+  const what = found.kind === 'album' ? 'album' : 'playlist';
+  const total = found.songs.length;
+  if (!state.matched) {
+    nodes.push(loading(`Finding the ${what}'s songs… ${state.done} of ${total}`));
+    return nodes;
+  }
+  const songs = state.matched.filter(Boolean);
+  const missing = found.songs.filter((_, i) => !state.matched[i]);
+  const title = `${found.title}${found.artist ? ` · ${found.artist}` : ''}`;
+  if (songs.length) {
+    nodes.push(songList(title, songs));
+    // Spotify's player lists a playlist's first 100 songs only.
+    const note = [songs.length < total ? `${songs.length} of ${total} songs found.` : `All ${total} songs found.`,
+      what === 'playlist' && total === 100 ? 'Only the first 100 songs of a playlist can be read from Spotify.' : ''].filter(Boolean).join(' ');
+    nodes.push(h('p', { class: 'quiet' }, note));
+  } else {
+    nodes.push(emptyState('Not found', `None of the ${what}'s songs were found.`));
+  }
+  if (missing.length) {
+    nodes.push(h('p', { class: 'quiet' }, 'Not found: ' + missing.map((song) => `${song.title} (${song.artist})`).join(', ') + '.'));
+  }
+  return nodes;
 }
 
 // ---- Lyrics -------------------------------------------------------------------------------------
