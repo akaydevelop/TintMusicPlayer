@@ -11,7 +11,7 @@ import * as update from './update.js';
 import { local, compareText, searchLocal, nudge } from './library.js';
 import { get, post } from './api.js';
 import { prefs, save as savePrefs } from './prefs.js';
-import { lyricsFor } from './lyrics.js';
+import { LANGUAGES, lyricsFor, translationOf } from './lyrics.js';
 import { hasJapanese, romanize } from './romaji.js';
 import { profile as artistProfile, artistHref } from './artist.js';
 
@@ -876,12 +876,16 @@ const LYRICS_HOLD_MS = 4000;
 // Whether Japanese lyrics are shown in romaji, kept by the page between runs.
 const ROMAJI_KEY = 'tint.lyrics.romaji';
 const romajiWanted = () => localStorage.getItem(ROMAJI_KEY) === 'on';
+// The language lyrics are translated to, if any, kept the same way.
+const TRANSLATE_KEY = 'tint.lyrics.translate';
+const translateWanted = () => localStorage.getItem(TRANSLATE_KEY) || '';
 
 function lyricsView({ scroller }) {
   const el = h('section', { class: 'page lyrics-page' });
   const still = window.matchMedia('(prefers-reduced-motion: reduce)');
   let track = null;
   let result = null; // 'loading', an Error, null (none found), or what lyricsFor() found
+  let translation = null; // null (none wanted, or it failed), 'working', or a line for each line
   let rows = [];
   let lit = -1;
   let heldUntil = 0;
@@ -894,11 +898,44 @@ function lyricsView({ scroller }) {
   function load() {
     track = player.current();
     result = track ? 'loading' : null;
+    translation = null;
     draw();
     if (!track) return;
     const mine = track;
     lyricsFor(track).then((r) => { result = r; }, (e) => { result = e instanceof Error ? e : new Error(String(e)); })
-      .then(() => { if (alive && player.current() === mine) draw(); });
+      .then(() => {
+        if (!alive || player.current() !== mine) return;
+        translate();
+        draw();
+      });
+  }
+
+  const textsOf = (lyrics) => (lyrics.lines ? lyrics.lines.map((line) => line.text) : lyrics.text.split('\n'));
+
+  /** Starts on the translation wanted for the lyrics showing, and draws again once it's there. */
+  function translate() {
+    const language = translateWanted();
+    translation = null;
+    if (!language || !result || result === 'loading' || result instanceof Error) return;
+    translation = 'working';
+    const mine = result;
+    const current = () => alive && result === mine && translateWanted() === language;
+    translationOf(mine, textsOf(mine), language).then((lines) => {
+      if (!current()) return;
+      translation = lines;
+      draw();
+    }, () => {
+      if (!current()) return;
+      translation = null;
+      toast("The translation service didn't answer. Try again in a moment.", { ms: 6000 });
+      draw();
+    });
+  }
+
+  /** A line's translation to show under it. Nothing for a line that's the same either way. */
+  function translationUnder(i, text, tag = 'span') {
+    const line = Array.isArray(translation) ? translation[i] : null;
+    return line && line !== text ? h(tag, { class: 'lyric-translation', dir: 'auto', lang: translateWanted() }, line) : null;
   }
 
   /** The lyrics' lines as they should be shown: as written, or in romaji once that is worked out. */
@@ -923,31 +960,38 @@ function lyricsView({ scroller }) {
     if (!track) return fill(el, pageHead('Lyrics', summary), emptyState('Nothing playing', 'The lyrics of the song playing show here.'));
     if (result === 'loading') return fill(el, pageHead('Lyrics', summary), loading('Looking for lyrics…'));
     if (result instanceof Error) return fill(el, pageHead('Lyrics', summary), failure(result, load));
-    if (!result) return fill(el, pageHead('Lyrics', summary), emptyState('No lyrics for this song', "Apple Music, YouTube Music and LRCLIB don't have lyrics for it."));
+    if (!result) return fill(el, pageHead('Lyrics', summary), emptyState('No lyrics for this song', "Apple Music, YouTube Music, LRCLIB and Genius don't have lyrics for it."));
 
-    const texts = result.lines ? result.lines.map((line) => line.text) : result.text.split('\n');
+    const texts = textsOf(result);
     const shown = shownTexts(texts);
     // Japanese lyrics can be shown in romaji instead.
-    const head = hasJapanese(texts.join('\n'))
-      ? pageHead('Lyrics', summary, segmented('Show the lyrics', [['original', 'Original'], ['romaji', 'Romaji']], romajiWanted() ? 'romaji' : 'original', (id) => {
+    const romajiSwitch = hasJapanese(texts.join('\n'))
+      ? segmented('Show the lyrics', [['original', 'Original'], ['romaji', 'Romaji']], romajiWanted() ? 'romaji' : 'original', (id) => {
         localStorage.setItem(ROMAJI_KEY, id === 'romaji' ? 'on' : 'off');
         draw();
-      }))
-      : pageHead('Lyrics', summary);
+      })
+      : null;
+    const languages = select('Translate the lyrics to', [['', 'No translation'], ...LANGUAGES], translateWanted(), (id) => {
+      localStorage.setItem(TRANSLATE_KEY, id);
+      translate();
+      draw();
+    });
+    const head = pageHead('Lyrics', summary, romajiSwitch, languages);
     const working = shown === texts && romajiWanted() && result.romajiPending
       ? h('p', { class: 'quiet lyrics-working' }, 'Working out the romaji… The first time, this downloads a Japanese dictionary (17 MB).')
-      : null;
+      : translation === 'working' ? h('p', { class: 'quiet lyrics-working' }, 'Translating…') : null;
+    const translated = Array.isArray(translation) && translation.some((line, i) => line && line !== texts[i]) ? ' Translated by Google.' : '';
 
     if (!result.lines) {
       return fill(el, head, working,
-        h('div', { class: 'lyrics is-plain' }, shown.map((line) => h('p', {}, line || '\u00a0'))),
-        h('p', { class: 'quiet lyrics-source' }, `These lyrics aren't timed to the song. From ${result.source}.`));
+        h('div', { class: 'lyrics is-plain' }, shown.map((line, i) => [h('p', {}, line || '\u00a0'), translationUnder(i, texts[i], 'p')])),
+        h('p', { class: 'quiet lyrics-source' }, `These lyrics aren't timed to the song. From ${result.source}.${translated}`));
     }
     rows = result.lines.map((line, i) => h('button', {
       class: 'lyric' + (line.text ? '' : ' is-gap'),
       onclick: () => { heldUntil = 0; player.seek(line.time); if (!player.state.playing) player.toggle(); },
-    }, shown[i] || '♪'));
-    fill(el, head, working, h('div', { class: 'lyrics' }, rows), h('p', { class: 'quiet lyrics-source' }, `Lyrics from ${result.source}`));
+    }, shown[i] || '♪', translationUnder(i, line.text)));
+    fill(el, head, working, h('div', { class: 'lyrics' }, rows), h('p', { class: 'quiet lyrics-source' }, `Lyrics from ${result.source}${translated && '.' + translated}`));
     follow(true);
   }
 

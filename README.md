@@ -170,9 +170,18 @@ and stays in view; clicking a line plays from there, and scrolling by hand pause
 for a few seconds. For a song from Apple Music, Apple's own timed lyrics are asked for first
 (through MusicKit, so they need the Apple sign-in). Then the host (`Lyrics.cs`) asks YouTube
 Music, for the song's own video or the same recording found by name: its Android app's service
-sends timed lyrics where the web page only gets plain text. Last is
+sends timed lyrics where the web page only gets plain text. Next is
 [LRCLIB](https://lrclib.net), a free public collection of timed lyrics looked up by title, artist
-and length. Plain lyrics are shown only when nobody has timed ones.
+and length. Plain lyrics are shown only when nobody has timed ones. Last, when nobody has any at
+all, is [Genius](https://genius.com): its lyrics are never timed, and it has no song lengths to
+compare, so a search result has to agree on both the title and the artist. Genius has no public
+way to read lyrics, so they come from its song pages, and a change to those pages can stop this.
+
+Lyrics can be translated with the menu at the top of the page; each translated line shows under
+the original, and the language chosen is kept for later songs. The host sends the lines to Google
+Translate's free address together, as each line is context for the next. Nothing is sent unless a
+language is chosen. It's an address for Google's own widgets rather than a public service, so it
+may refuse Tint or change.
 
 Japanese lyrics can be switched to romaji (`romaji.js`). Kanji need a dictionary to know how they
 are read, so [kuromoji](https://github.com/takuyaa/kuromoji.js) (Apache-2.0, in

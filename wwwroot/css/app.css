@@ -329,6 +329,8 @@ input, textarea, select { font: inherit; color: inherit; }
 .lyric:hover { background: var(--hover); }
 .lyric.is-gap { letter-spacing: 0.2em; }
 .lyrics.is-plain p { color: var(--ink); font: 600 19px/1.5 var(--display); }
+.lyric-translation { display: block; margin-top: 2px; font-size: 0.62em; font-weight: 500; line-height: 1.35; }
+.lyrics.is-plain p.lyric-translation { margin: 0 0 6px; color: var(--dim); font-size: 15px; font-weight: 500; line-height: 1.4; }
 .lyrics-source { margin-top: 26px; }
 .lyrics-working { margin: -8px 0 14px; }
 

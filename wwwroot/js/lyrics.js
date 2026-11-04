@@ -1,11 +1,11 @@
 // Finding the lyrics of the song playing, timed line by line where possible. Apple Music's own
 // come first for a song from Apple Music; then the host asks YouTube Music (for the song's video
-// there, or the same recording found by name) and LRCLIB (Lyrics.cs). Untimed lyrics are only
-// kept when nobody has timed ones.
+// there, or the same recording found by name), LRCLIB and Genius (Lyrics.cs). Untimed lyrics are
+// only kept when nobody has timed ones.
 
 import { lyricsOf } from './apple.js';
 import { linkFor, videoIn } from './youtube.js';
-import { get } from './api.js';
+import { get, post } from './api.js';
 
 // Song id → lookup. A lookup that failed (offline, a service busy) is forgotten and tried again.
 const found = new Map();
@@ -39,6 +39,31 @@ async function look(track) {
     if (apple) return apple;
     throw new Error("The lyrics services didn't answer. Try again in a moment.");
   }
+}
+
+// ---- Translating --------------------------------------------------------------------------------
+
+/** What lyrics can be translated to: Google Translate's code for each, and its name. */
+export const LANGUAGES = [
+  ['ar', 'Arabic'], ['zh-CN', 'Chinese (Simplified)'], ['zh-TW', 'Chinese (Traditional)'], ['nl', 'Dutch'],
+  ['en', 'English'], ['fr', 'French'], ['de', 'German'], ['hi', 'Hindi'], ['id', 'Indonesian'], ['it', 'Italian'],
+  ['ja', 'Japanese'], ['ko', 'Korean'], ['pl', 'Polish'], ['pt', 'Portuguese'], ['ru', 'Russian'], ['es', 'Spanish'],
+  ['th', 'Thai'], ['tr', 'Turkish'], ['uk', 'Ukrainian'], ['vi', 'Vietnamese'],
+];
+
+// What lyricsFor() found → language → lookup. A lookup that failed is forgotten and tried again.
+const translations = new WeakMap();
+
+/** The lines in another language, one for each of `texts`. */
+export function translationOf(lyrics, texts, language) {
+  if (!translations.has(lyrics)) translations.set(lyrics, new Map());
+  const known = translations.get(lyrics);
+  if (!known.has(language)) {
+    const lookup = post('/api/lyrics/translate', { lines: texts, language }).then((answer) => answer.lines);
+    lookup.catch(() => known.delete(language));
+    known.set(language, lookup);
+  }
+  return known.get(language);
 }
 
 // ---- Apple's TTML -------------------------------------------------------------------------------

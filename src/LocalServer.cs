@@ -429,6 +429,19 @@ sealed class LocalServer : IDisposable
                     return;
                 }
 
+            case "lyrics/translate" when post:
+                try
+                {
+                    var lines = body?["lines"]?.AsArray().Select(line => line?.GetValue<string>() ?? "").ToList() ?? [];
+                    await WriteJson(res, new { lines = await Lyrics.Translate(lines, body?["language"]?.GetValue<string>() ?? "en") });
+                }
+                catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException or InvalidOperationException or IndexOutOfRangeException)
+                {
+                    res.StatusCode = 502;
+                    await WriteJson(res, new { error = "The translation service didn't answer. Try again in a moment." });
+                }
+                return;
+
             case "spotify":
                 try
                 {
