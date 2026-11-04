@@ -544,6 +544,7 @@ input, textarea, select { font: inherit; color: inherit; }
 .row-main { display: grid; flex: 1.5 1 0; min-width: 0; }
 .row-title, .row-sub, .row-album { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .row-sub { color: var(--dim); font-size: 13px; }
+.row-english { margin-left: 10px; color: var(--dim); font-size: 13px; }
 .row-album { flex: 1 1 0; min-width: 0; color: var(--dim); font-size: 13px; }
 .row-time { flex: none; width: 46px; color: var(--dim); text-align: right; font: 400 13.5px/1 var(--display); font-variant-numeric: tabular-nums; }
 .row-more { opacity: 0; color: var(--dim); transition: opacity 0.2s var(--ease), background-color 0.2s var(--ease), scale 0.25s var(--ease); }

@@ -101,7 +101,9 @@ function trackRow(tracks, i, { numbered = false, showAlbum = true, albumArtist =
   },
     h('span', { class: 'row-lead' }, lead),
     h('span', { class: 'row-main' },
-      h('span', { class: 'row-title' }, track.title, track.explicit && h('span', { class: 'explicit', title: 'Explicit' }, 'E')),
+      h('span', { class: 'row-title' }, track.title, track.explicit && h('span', { class: 'explicit', title: 'Explicit' }, 'E'),
+        // Album pages name a Japanese song in English too, unless its title already does.
+        numbered && track.englishTitle && !track.title.includes(track.englishTitle) && h('span', { class: 'row-english' }, track.englishTitle)),
       // On an album page the artist is in the heading; only guests need naming on the rows.
       track.artist !== albumArtist && h('span', { class: 'row-sub' }, track.artist)),
     showAlbum && h('span', { class: 'row-album' }, track.album),
@@ -549,6 +551,7 @@ function asyncView(fetcher, build, { needsApple = true } = {}) {
 function appleAlbumView({ scroller, params }) {
   return asyncView(() => apple.album(params[0]), (album) => {
     const parts = albumBody(scroller, album.tracks, album.artist);
+    apple.findEnglishTitles(album.tracks).then((found) => { if (found) parts.forEach((p) => p.refresh()); });
     return {
       parts,
       nodes: [

@@ -151,23 +151,43 @@ async function call(path, params) {
   }
 }
 
+const JAPANESE = /[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]/u;
+const usableEnglish = (track, text) => {
+  const name = text?.trim();
+  return name && name !== track.title.trim() && /[A-Za-z]/.test(name) && !JAPANESE.test(name) ? name : null;
+};
+
 const englishTitles = new Map();
 /** Read the official English catalog name for the same recording, without delaying playback. */
 export async function englishTitle(track) {
-  if (!/[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]/u.test(track?.title || '')) return null;
+  if (!JAPANESE.test(track?.title || '')) return null;
   if (track.englishTitle) return track.englishTitle;
   if (track.source !== 'apple' || !/^\d+$/.test(track.appleId || '') || !music) return null;
   const id = track.appleId;
   if (!englishTitles.has(id)) {
     if (englishTitles.size >= 200) englishTitles.delete(englishTitles.keys().next().value);
-    const pending = call(`/v1/catalog/us/songs/${id}`, { l: 'en-US' }).then((res) => {
-      const name = res.data?.[0]?.attributes?.name?.trim();
-      return name && name !== track.title.trim() && /[A-Za-z]/.test(name) &&
-        !/[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]/u.test(name) ? name : null;
-    }).catch(() => { englishTitles.delete(id); return null; });
+    const pending = call(`/v1/catalog/us/songs/${id}`, { l: 'en-US' })
+      .then((res) => usableEnglish(track, res.data?.[0]?.attributes?.name))
+      .catch(() => { englishTitles.delete(id); return null; });
     englishTitles.set(id, pending);
   }
   return englishTitles.get(id);
+}
+
+/** Those names for a whole album in as few requests as it takes, kept on the songs. True if any turned up. */
+export async function findEnglishTitles(tracks) {
+  const wanted = tracks.filter((t) => !t.englishTitle && t.source === 'apple' && JAPANESE.test(t.title) && /^\d+$/.test(t.appleId || ''));
+  let found = false;
+  for (let i = 0; i < wanted.length; i += 100) {
+    const some = wanted.slice(i, i + 100);
+    const res = await call('/v1/catalog/us/songs', { ids: some.map((t) => t.appleId).join(','), l: 'en-US' }).catch(() => null);
+    const names = new Map((res?.data || []).map((r) => [r.id, r.attributes?.name]));
+    for (const track of some) {
+      track.englishTitle = usableEnglish(track, names.get(track.appleId)) || undefined;
+      if (track.englishTitle) found = true;
+    }
+  }
+  return found;
 }
 
 /**
