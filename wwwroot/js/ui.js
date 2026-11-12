@@ -61,6 +61,12 @@ const ICONS = {
   pin: '<path d="M9.2 3.5h5.6a.8.8 0 0 1 .6 1.3l-1.2 1.5v4.4l2.7 2.6a.8.8 0 0 1-.55 1.4H12.8V20a.8.8 0 0 1-1.6 0v-5.3H7.65a.8.8 0 0 1-.55-1.4l2.7-2.6V6.3L8.6 4.8a.8.8 0 0 1 .6-1.3z"/>',
   bookmark: `<g ${STROKE}><path d="M7 4.5h10a1 1 0 0 1 1 1v14l-6-4-6 4v-14a1 1 0 0 1 1-1z"/></g>`,
   saved: '<path d="M7 3.6h10a1.9 1.9 0 0 1 1.9 1.9v14a.9.9 0 0 1-1.4.75L12 16.6l-5.5 3.65a.9.9 0 0 1-1.4-.75v-14A1.9 1.9 0 0 1 7 3.6z"/>',
+  // Spotify's mark: three arcs on a disc, cut out in --icon-cut (the window's background unless set).
+  spotify: '<circle cx="12" cy="12" r="9.5"/><g fill="none" stroke="var(--icon-cut, var(--bg))" stroke-width="1.8" stroke-linecap="round"><path d="M6.8 9.4c3.4-1 7.6-.7 10.4 1"/><path d="M7.5 12.5c2.8-.8 6.1-.5 8.5.9"/><path d="M8.2 15.4c2.2-.6 4.6-.4 6.5.7"/></g>',
+  // A tick, a plus and a pen, for choosing, making and changing tags.
+  check: `<g ${STROKE} stroke-width="2.4"><path d="m5.5 12.5 4.2 4.2 8.8-9.2"/></g>`,
+  plus: `<g ${STROKE} stroke-width="2.2"><path d="M12 5.5v13"/><path d="M5.5 12h13"/></g>`,
+  pen: `<g ${STROKE}><path d="M14.8 5.2a2 2 0 0 1 2.8 0l1.2 1.2a2 2 0 0 1 0 2.8L9 19H5v-4z"/><path d="m13 7 4 4"/></g>`,
   tag: `<g ${STROKE}><path d="M3.8 11.2V5a1.2 1.2 0 0 1 1.2-1.2h6.2l9 9a1.2 1.2 0 0 1 0 1.7l-6.1 6.1a1.2 1.2 0 0 1-1.7 0z"/><circle cx="8.3" cy="8.3" r="1.3"/></g>`,
   // Two sheets, one over the other; an arrow down onto a tray.
   copy: `<g ${STROKE}><rect x="8.5" y="8.5" width="11" height="11" rx="2.2"/><path d="M15.5 8.5V6.7a2.2 2.2 0 0 0-2.2-2.2H6.7a2.2 2.2 0 0 0-2.2 2.2v6.6a2.2 2.2 0 0 0 2.2 2.2h1.8"/></g>`,

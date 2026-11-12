@@ -16,7 +16,8 @@ Needs Windows 11, the .NET 10 Desktop Runtime and the Edge WebView2 Runtime (par
 The first start asks two things: where you listen most (Apple Music, YouTube Music or only this
 PC), and which folders hold music on this PC, with the iTunes and Apple Music folders already
 filled in when they exist. Choosing a service leads to its setup in Settings. Both answers can be
-changed in Settings later.
+changed in Settings later. When the welcome changes, an update shows it once more
+(`Settings.WelcomeVersion`), with the answers already given filled in.
 
 ### On Linux
 
@@ -116,16 +117,18 @@ the results, followed by what a search for its title finds. Search doesn't list 
 YouTube Music can play, so this reaches the ones it misses.
 
 A link to a YouTube playlist opens the playlist itself, ready to play or to save (see Home and
-saved playlists, below). A song's link that only names the mix YouTube made around it still opens
+saved playlists, below), with a note at the top saying it came from the pasted link. A song's link that only names the mix YouTube made around it still opens
 the song.
 
 A Spotify link (a song, an album or a playlist) pasted into the search box finds the same songs
 on Apple Music and YouTube Music. Tint doesn't play from Spotify or need an account there: it
 reads the titles, artists and lengths from the small player Spotify lets other sites embed
 (`Spotify.cs`), which lists a playlist's first 100 songs. A song shows its match on each service
-that has it, and an album or playlist becomes one list, each song from the main service chosen
-at the first start where it's there and from the other otherwise (with both set up, the page
-can look on either one first). "Save as a playlist in Tint" keeps that list as a playlist of
+that has it. An album or playlist first asks where to find its songs, Apple Music or YouTube
+Music (the main service chosen at the first start is picked to begin with), and nothing is
+searched until "Find the songs" is pressed. It then becomes one list, each song from the chosen
+service where it's there and from the other otherwise; "Look on … instead" searches again the
+other way round. "Save as a playlist in Tint" keeps that list as a playlist of
 Tint's own (see below), so it opens and plays without searching again; the same link pasted
 later leads back to it, or replaces its songs with a new search.
 
@@ -172,7 +175,11 @@ Tint opens on Home (the house in the bar): the playlists you pinned, the songs p
 "Save" on a playlist's page, or a right-click on its cover, keeps the playlist in Tint itself,
 apart from any service's library (`collection.js`; the host stores it as `collection.json`). A
 saved playlist can be pinned to the top of Home and of the Playlists page, and given tags, each
-with a name and a color; the Playlists page can be narrowed to one tag. A copy of its songs is
+with a name and a color; the Playlists page can be narrowed to one tag. The pin at a cover's top
+left (shown on hover) pins it, saving it first if need be. The tags under a playlist's title, or
+on its card, open a box that finds a tag or makes one as you type, ticks the playlist's tags, and
+renames, recolors or deletes any of them; "Edit tags" on the Playlists page does the same for all
+tags, and a playlist dragged onto a tag there is given it. A copy of its songs is
 kept with it, so it still opens and plays if the service loses it.
 
 Every playlist and album page opened is also kept on this PC (`pagecache.js`, `PageCache.cs`), so

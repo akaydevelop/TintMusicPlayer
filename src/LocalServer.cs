@@ -632,7 +632,7 @@ sealed class LocalServer : IDisposable
         crossfadeMs = _settings.CrossfadeMs,
         cacheKeepDays = _settings.CacheKeepDays,
         mainService = _settings.MainService,
-        welcomed = _settings.Welcomed ?? true,
+        welcomed = _settings.WelcomeDone,
         apple = new
         {
             teamId = _settings.AppleTeamId ?? "",
@@ -698,7 +698,11 @@ sealed class LocalServer : IDisposable
         }
         if (o["mainService"] is JsonValue main && main.GetValue<string>() is var service && service is "apple" or "youtube" or "pc")
             _settings.MainService = service;
-        if (o["welcomed"] is JsonValue welcomed) _settings.Welcomed = welcomed.GetValue<bool>();
+        if (o["welcomed"] is JsonValue welcomed)
+        {
+            _settings.Welcomed = welcomed.GetValue<bool>();
+            if (_settings.Welcomed == true) _settings.WelcomeSeen = Settings.WelcomeVersion;
+        }
         if (o["appleTeamId"] is JsonValue team) _settings.AppleTeamId = team.GetValue<string>().Trim();
         if (o["appleKeyId"] is JsonValue keyId) _settings.AppleKeyId = keyId.GetValue<string>().Trim();
         if (o["appleToken"] is JsonValue token)

@@ -13,7 +13,7 @@ import * as played from './history.js';
 import { initDeck, themeNow } from './deck.js';
 import { initPresence } from './presence.js';
 import { initSystem } from './system.js';
-import { routes } from './views.js';
+import { routes, notePasted } from './views.js';
 import { post } from './api.js';
 
 const scroller = $('scroller');
@@ -114,6 +114,7 @@ function initBar() {
     if (listed) {
       searchBox.value = '';
       searchBox.blur();
+      notePasted(listed);
       location.hash = '#/playlist/y/' + encodeURIComponent(listed);
       return;
     }

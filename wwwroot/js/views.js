@@ -180,17 +180,39 @@ function card(item) {
   const isPlaylist = item.href.includes('#/playlist/');
   const saved = isPlaylist ? collection.find(item.href) : null;
   const marks = collection.tagsOf(saved);
+  // The pin shows on hover, and stays while the playlist is pinned. Pinning saves it first.
+  const pinIt = async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const now = collection.find(item.href) || await saveInTint(item, true);
+    if (!now) return;
+    collection.setPinned(item.href, !now.pinned);
+    toast(now.pinned ? `Pinned "${item.title}" to the top` : `Unpinned "${item.title}"`);
+  };
+  const openTags = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const r = e.currentTarget.getBoundingClientRect();
+    tagPanel(r.left, r.bottom + 6, item.href);
+  };
   const el = h('a', {
     class: 'card', href: item.href, title: item.title,
     oncontextmenu: isPlaylist ? (e) => { e.preventDefault(); playlistMenu(e.clientX, e.clientY, item); } : null,
+    // On the Playlists page a playlist can be picked up and dropped on a tag to be given it.
+    draggable: false,
+    onpointerdown: isPlaylist ? (e) => liftPlaylist(e, item, el) : null,
   },
     h('span', { class: 'card-art' },
       cover(item.art, 200),
-      saved?.pinned && h('span', { class: 'card-pin', icon: 'pin', title: 'Pinned' }),
+      isPlaylist && h('button', {
+        class: 'card-pin' + (saved?.pinned ? ' is-pinned' : ''), icon: 'pin',
+        title: saved?.pinned ? 'Unpin' : 'Pin to the top', 'aria-label': `${saved?.pinned ? 'Unpin' : 'Pin'} ${item.title}`,
+        'aria-pressed': String(!!saved?.pinned), onclick: pinIt,
+      }),
       item.href.includes('#/artist/') ? null : h('button', { class: 'card-play', icon: 'play', 'aria-label': `Play ${item.title}`, onclick: playIt })),
     h('span', { class: 'card-title' }, item.title),
     item.artist && h('span', { class: 'card-sub' }, item.artist),
-    marks.length ? h('span', { class: 'card-tags' }, marks.map(tagLabel)) : null);
+    marks.length ? h('button', { class: 'card-tags', title: 'Change the tags', 'aria-label': `Tags of ${item.title}`, onclick: openTags }, marks.map(tagLabel)) : null);
   // Each card glides in the first time it comes into view, and stays still when a page redraws.
   return cardsSeen.has(item.href) ? el : fadeInWhenSeen(el, () => cardsSeen.add(item.href));
 }
@@ -208,13 +230,16 @@ function tagged(el, color) {
 const tagLabel = (t) => tagged(h('span', { class: 'tag-label' }, h('span', { class: 'tag-dot' }), t.name), t.color);
 const nextColor = (color) => collection.COLORS[(collection.COLORS.indexOf(color) + 1) % collection.COLORS.length];
 
-async function saveInTint(item) {
+/** Saves a playlist in Tint with its songs. Returns the saved copy, or null when it couldn't be. */
+async function saveInTint(item, quiet = false) {
   try {
     const tracks = item.tracks || await tracksOf(item);
     collection.save({ ...item, tracks });
-    toast(`Saved "${item.title}" in Tint`);
+    if (!quiet) toast(`Saved "${item.title}" in Tint`);
+    return collection.find(item.href);
   } catch (e) {
     toast(e?.message || "That playlist couldn't be saved.");
+    return null;
   }
 }
 
@@ -229,65 +254,324 @@ function savedMenuItems(x, y, saved) {
 
 function playlistMenu(x, y, item) {
   const saved = collection.find(item.href);
-  showMenu(x, y, saved ? savedMenuItems(x, y, saved) : [{ label: 'Save in Tint', run: () => saveInTint(item) }]);
+  showMenu(x, y, saved ? savedMenuItems(x, y, saved) : [
+    { label: 'Save in Tint', run: () => saveInTint(item) },
+    { label: 'Pin to the top', run: async () => { if (await saveInTint(item, true)) collection.setPinned(item.href, true); } },
+    { label: 'Tags…', run: async () => { if (await saveInTint(item, true)) tagPanel(x, y, item.href); } },
+  ]);
 }
 
-/** Choosing a saved playlist's tags, and making, recolouring and deleting tags. */
-function tagPanel(x, y, href) {
-  const panel = h('div', { class: 'tag-panel', role: 'dialog', 'aria-label': 'Tags' });
-  let color = collection.COLORS[collection.tags().length % collection.COLORS.length];
+/** A colour no tag has yet, or the one fewest tags have. */
+function freeColor() {
+  const uses = (c) => collection.tags().filter((t) => t.color === c).length;
+  return collection.COLORS.reduce((best, c) => (uses(c) < uses(best) ? c : best), collection.COLORS[0]);
+}
 
-  function draw() {
-    const item = collection.find(href);
-    if (!item) { closeMenu(); return null; }
-    const name = h('input', {
-      type: 'text', placeholder: 'New tag', maxLength: 40, 'aria-label': 'Name of a new tag', spellcheck: false,
-      onkeydown: (e) => { if (e.key === 'Enter') add(); },
-    });
-    function add() {
-      const made = collection.addTag(name.value, color);
-      if (!made) { name.focus(); return; }
-      if (!item.tags.includes(made.id)) collection.toggleTag(href, made.id);
-      color = nextColor(color);
-      draw()?.focus();
-    }
-    fill(panel,
-      h('p', { class: 'tag-panel-title' }, `Tags for "${item.title}"`),
-      collection.tags().map((t) => {
-        const on = item.tags.includes(t.id);
-        return h('div', { class: 'tag-option' },
-          tagged(h('button', {
-            class: 'tag-swatch', title: 'Change colour', 'aria-label': `Change the colour of ${t.name}`,
-            onclick: () => { collection.editTag(t.id, { color: nextColor(t.color) }); draw(); },
-          }), t.color),
-          h('button', {
-            class: 'tag-name', role: 'menuitemcheckbox', 'aria-checked': String(on),
-            onclick: () => { collection.toggleTag(href, t.id); draw(); },
-          }, h('span', {}, t.name), h('span', { class: 'tag-check', 'aria-hidden': 'true' }, on ? '✓' : '')),
-          h('button', {
-            class: 'icon-btn small tag-delete', icon: 'close', title: 'Delete this tag everywhere', 'aria-label': `Delete the tag ${t.name}`,
-            onclick: () => { collection.deleteTag(t.id); toast(`Deleted the tag "${t.name}"`); draw(); },
-          }));
-      }),
-      collection.tags().length ? null : h('p', { class: 'quiet tag-panel-hint' }, 'Make a tag, then use it on as many playlists as you like.'),
-      h('div', { class: 'tag-new' }, name, h('button', { class: 'btn', onclick: add }, 'Add')),
-      h('div', { class: 'tag-colors', role: 'radiogroup', 'aria-label': 'Colour of the new tag' },
-        collection.COLORS.map((c) => tagged(h('button', {
-          class: 'tag-swatch', role: 'radio', 'aria-checked': String(c === color), 'aria-label': `Colour ${c}`,
-          onclick: () => { color = c; draw()?.focus(); },
-        }), c))));
-    return name;
+const tagUses = (id) => collection.items().filter((item) => item.tags?.includes(id)).length;
+
+/**
+ * The tags. The box at the top finds a tag or makes a new one (Enter gives it to the playlist);
+ * a click on a tag gives or takes it; the pen opens it to rename it, recolour it or delete it.
+ * Without a playlist (`href` null) it only looks after the tags themselves.
+ */
+function tagPanel(x, y, href = null) {
+  const panel = h('div', { class: 'tag-panel', role: 'dialog', 'aria-label': href ? 'Tags' : 'Your tags' });
+  let open = null; // the tag being edited
+  let deleting = null; // the tag whose Delete was pressed once
+  let color = freeColor();
+
+  const find = h('input', {
+    type: 'text', class: 'tag-find', maxLength: 40, spellcheck: false,
+    placeholder: href ? 'Find or make a tag' : 'Make a tag',
+    'aria-label': href ? 'Find or make a tag' : 'Name of a new tag',
+    oninput: () => draw(),
+    onkeydown: (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); enter(e); }
+      if (e.key === 'ArrowDown') { e.preventDefault(); list.querySelector('button')?.focus(); }
+    },
+  });
+  const list = h('div', { class: 'tag-list' });
+  // Up and down move between the tags, and back up into the box.
+  list.addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+    const picks = [...list.querySelectorAll('.tag-pick')];
+    const at = picks.indexOf(document.activeElement.closest('.tag-row')?.querySelector('.tag-pick'));
+    if (at < 0) return;
+    e.preventDefault();
+    const next = at + (e.key === 'ArrowDown' ? 1 : -1);
+    (next < 0 ? find : picks[Math.min(next, picks.length - 1)]).focus();
+  });
+
+  const item = () => (href ? collection.find(href) : null);
+  const named = (name) => collection.tags().find((t) => t.name.toLowerCase() === name.trim().toLowerCase());
+
+  function give(t) {
+    const it = item();
+    if (!it) return;
+    collection.toggleTag(href, t.id);
   }
 
-  const input = draw();
-  if (!input) return;
+  /** The tag Enter picks: the one by that name, or else the first whose name holds what was typed. */
+  function picked() {
+    const q = find.value.trim().toLowerCase();
+    if (!q) return null;
+    return named(q) || collection.tags().filter((t) => t.name.toLowerCase().includes(q)).sort((a, b) => a.name.localeCompare(b.name))[0] || null;
+  }
+
+  function enter(e, make = false) {
+    const name = find.value.trim();
+    if (!name) return;
+    const same = make ? named(name) : picked();
+    if (same) {
+      if (href) { if (!item()?.tags?.includes(same.id)) give(same); } else open = same.id;
+    } else {
+      const made = collection.addTag(name, color);
+      if (made && href) give(made);
+      color = freeColor();
+    }
+    find.value = '';
+    draw();
+    find.focus();
+  }
+
+  function editor(t) {
+    const rename = h('input', {
+      type: 'text', class: 'tag-rename', value: t.name, maxLength: 40, spellcheck: false, 'aria-label': `Name of the tag ${t.name}`,
+      onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); commit(); open = null; draw(true); } },
+      onchange: () => commit(),
+    });
+    function commit() {
+      const name = rename.value.trim();
+      if (!name || name === t.name) { rename.value = t.name; return; }
+      const other = named(name);
+      if (other && other.id !== t.id) { toast(`There's already a tag called "${other.name}"`); rename.value = t.name; return; }
+      collection.editTag(t.id, { name });
+    }
+    const uses = tagUses(t.id);
+    const sure = deleting === t.id;
+    return h('div', { class: 'tag-editor' },
+      rename,
+      h('div', { class: 'tag-colors', role: 'radiogroup', 'aria-label': `Colour of ${t.name}` },
+        collection.COLORS.map((c) => tagged(h('button', {
+          class: 'tag-swatch', role: 'radio', 'aria-checked': String(c === t.color), 'aria-label': `Colour ${c}`,
+          dataset: { key: `color-${t.id}-${c}` },
+          onclick: () => { collection.editTag(t.id, { color: c }); draw(true); },
+        }), c))),
+      h('button', {
+        class: 'tag-delete' + (sure ? ' is-sure' : ''), dataset: { key: `delete-${t.id}` },
+        onclick: () => {
+          if (!sure && uses) { deleting = t.id; draw(true); return; }
+          collection.deleteTag(t.id);
+          toast(`Deleted the tag "${t.name}"`);
+          open = deleting = null;
+          draw();
+          find.focus();
+        },
+      }, sure ? `Take it off ${plural(uses, 'playlist')} and delete it` : 'Delete this tag'));
+  }
+
+  function row(t, it, isNext = false) {
+    const on = !!it?.tags?.includes(t.id);
+    const editing = open === t.id;
+    return h('div', { class: 'tag-row' + (editing ? ' is-open' : '') + (on ? ' is-on' : '') },
+      h('div', { class: 'tag-row-main' },
+        h('button', {
+          class: 'tag-pick' + (isNext ? ' is-next' : ''), dataset: { key: `pick-${t.id}` },
+          role: href ? 'menuitemcheckbox' : null, 'aria-checked': href ? String(on) : null,
+          'aria-expanded': href ? null : String(editing),
+          title: href ? (on ? 'Take this tag off' : 'Give it this tag') : 'Rename, recolour or delete',
+          onclick: () => { if (href) give(t); else { open = editing ? null : t.id; deleting = null; } draw(true); },
+        },
+          h('span', { class: 'tag-box', icon: on ? 'check' : null }),
+          tagged(h('span', { class: 'tag-dot' }), t.color),
+          h('span', { class: 'tag-row-name' }, t.name),
+          h('span', { class: 'tag-row-count' }, String(tagUses(t.id)))),
+        href ? h('button', {
+          class: 'icon-btn small tag-edit', icon: 'pen', dataset: { key: `edit-${t.id}` },
+          title: 'Rename, recolour or delete', 'aria-label': `Edit the tag ${t.name}`, 'aria-expanded': String(editing),
+          onclick: () => { open = editing ? null : t.id; deleting = null; draw(true); },
+        }) : null),
+      editing ? editor(t) : null);
+  }
+
+  /** Draws the list again, keeping the focus where it was (`keepFocus`) and the panel on screen. */
+  function draw(keepFocus = false) {
+    const it = item();
+    if (href && !it) { closeMenu(); return; }
+    const key = keepFocus ? document.activeElement?.dataset?.key : null;
+    const q = find.value.trim().toLowerCase();
+    const all = collection.tags();
+    // By name, so a tag stays where it is when it's ticked.
+    const shown = all.filter((t) => t.name.toLowerCase().includes(q)).sort((a, b) => a.name.localeCompare(b.name));
+    const making = q && !named(q);
+    const next = picked();
+    fill(list,
+      shown.map((t) => row(t, it, t === next)),
+      making ? h('div', { class: 'tag-make' },
+        h('button', { class: 'tag-pick' + (shown.length ? '' : ' is-next'), dataset: { key: 'make' }, onclick: (e) => enter(e, true) },
+          h('span', { class: 'tag-box', icon: 'plus' }),
+          tagged(h('span', { class: 'tag-dot' }), color),
+          h('span', { class: 'tag-row-name' }, `Make "${find.value.trim()}"`)),
+        h('div', { class: 'tag-colors', role: 'radiogroup', 'aria-label': 'Colour of the new tag' },
+          collection.COLORS.map((c) => tagged(h('button', {
+            class: 'tag-swatch', role: 'radio', 'aria-checked': String(c === color), 'aria-label': `Colour ${c}`,
+            dataset: { key: `new-${c}` },
+            onclick: () => { color = c; draw(true); },
+          }), c)))) : null,
+      !all.length && !q ? h('p', { class: 'quiet tag-panel-hint' }, 'Type a name to make your first tag. A tag can go on as many playlists as you like.') : null,
+      all.length && !shown.length && !making ? h('p', { class: 'quiet tag-panel-hint' }, 'No tag by that name.') : null);
+    if (key) list.querySelector(`[data-key="${CSS.escape(key)}"]`)?.focus();
+    if (panel.isConnected) {
+      const r = panel.getBoundingClientRect();
+      if (r.bottom > innerHeight - 8) panel.style.top = Math.max(8, innerHeight - 8 - panel.offsetHeight) + 'px';
+    }
+  }
+
+  fill(panel,
+    h('p', { class: 'tag-panel-title' }, href ? `Tags for "${item()?.title || ''}"` : 'Your tags'),
+    find,
+    list,
+    href ? null : h('p', { class: 'quiet tag-panel-foot' }, 'Drag a playlist onto a tag to give it that tag.'));
+  draw();
+  if (href && !item()) return;
   showPopover(x, y, panel);
-  input.focus();
+  find.focus();
+}
+
+// ---- dragging a playlist onto a tag --------------------------------------------------------------
+
+/** Gives a playlist a tag, saving the playlist first if it isn't yet. */
+async function giveTag(item, tagId) {
+  const saved = collection.find(item.href) || await saveInTint(item, true);
+  const t = collection.tag(tagId);
+  if (!saved || !t) return;
+  if (saved.tags?.includes(tagId)) { toast(`"${item.title}" already has the tag "${t.name}"`); return; }
+  collection.toggleTag(item.href, tagId);
+  toast(`Tagged "${item.title}" ${t.name}`);
+}
+
+/** The nearest ancestor that scrolls up and down. */
+function scrollerOf(el) {
+  for (let at = el.parentElement; at; at = at.parentElement) {
+    if (at.scrollHeight > at.clientHeight && /auto|scroll/.test(getComputedStyle(at).overflowY)) return at;
+  }
+  return document.scrollingElement;
+}
+
+/**
+ * On the Playlists page a card can be picked up and dropped on a tag above. Its cover lifts off
+ * under the pointer, leans with the movement, and either drops into the tag or glides home.
+ */
+function liftPlaylist(e, item, card) {
+  if (e.pointerType !== 'mouse' || e.button !== 0 || e.target.closest('button') || card.closest('.shelf-row')) return;
+  if (!document.querySelector('.tag-chip[data-tag]')) return;
+  const art = card.querySelector('.card-art');
+  const start = { x: e.clientX, y: e.clientY };
+  const scroller = scrollerOf(card);
+  let ghost = null, over = null, tilt = 0, lastX = e.clientX, pointer = start, scrolling = 0;
+  let grab = null; // where on the cover it was taken, and where the cover started
+
+  const place = () => {
+    ghost.style.translate = `${pointer.x - grab.dx}px ${pointer.y - grab.dy}px`;
+    ghost.style.rotate = `${tilt}deg`;
+  };
+
+  function lift() {
+    const r = art.getBoundingClientRect();
+    grab = { dx: start.x - r.left, dy: start.y - r.top, left: r.left, top: r.top };
+    ghost = h('div', { class: 'drag-ghost', 'aria-hidden': 'true' }, art.querySelector('.cover').cloneNode(true));
+    Object.assign(ghost.style, { width: r.width + 'px', height: r.height + 'px', transformOrigin: `${grab.dx}px ${grab.dy}px` });
+    document.body.append(ghost);
+    place();
+    // Shrinks into the hand around the point it was taken by.
+    requestAnimationFrame(() => ghost.classList.add('is-lifted'));
+    card.classList.add('is-lifted-away');
+    document.body.classList.add('is-dragging-playlist');
+    closeMenu();
+  }
+
+  // Near the top or bottom edge, the page scrolls on its own, faster the closer the pointer gets.
+  function autoScroll() {
+    const r = scroller.getBoundingClientRect();
+    const edge = 70;
+    const up = pointer.y - r.top, down = r.bottom - pointer.y;
+    const speed = up < edge ? -(edge - up) / 4 : down < edge ? (edge - down) / 4 : 0;
+    if (speed) scroller.scrollTop += speed;
+    scrolling = requestAnimationFrame(autoScroll);
+  }
+
+  function move(ev) {
+    pointer = { x: ev.clientX, y: ev.clientY };
+    if (!ghost) {
+      if (Math.hypot(ev.clientX - start.x, ev.clientY - start.y) < 8) return;
+      lift();
+      autoScroll();
+    }
+    tilt = Math.max(-9, Math.min(9, tilt * 0.7 + (ev.clientX - lastX) * 0.5));
+    lastX = ev.clientX;
+    place();
+    const chip = document.elementFromPoint(ev.clientX, ev.clientY)?.closest('.tag-chip[data-tag]') || null;
+    if (chip !== over) {
+      over?.classList.remove('is-drop');
+      chip?.classList.add('is-drop');
+      over = chip;
+      ghost.classList.toggle('is-over', !!chip);
+    }
+  }
+
+  // The lean eases back upright when the pointer rests.
+  const settle = setInterval(() => { if (ghost && Math.abs(tilt) > 0.1) { tilt *= 0.6; place(); } }, 60);
+
+  function end(ev) {
+    window.removeEventListener('pointermove', move);
+    window.removeEventListener('pointerup', end);
+    window.removeEventListener('pointercancel', end);
+    clearInterval(settle);
+    cancelAnimationFrame(scrolling);
+    if (!ghost) return;
+    // The click that ends a drag doesn't also open the playlist.
+    const eat = (c) => { c.preventDefault(); c.stopImmediatePropagation(); };
+    card.addEventListener('click', eat, true);
+    setTimeout(() => card.removeEventListener('click', eat, true), 0);
+    document.body.classList.remove('is-dragging-playlist');
+    const chip = ev.type === 'pointerup' ? over : null;
+    over?.classList.remove('is-drop');
+    const from = { translate: ghost.style.translate, rotate: ghost.style.rotate, scale: getComputedStyle(ghost).scale, opacity: 1 };
+    ghost.classList.remove('is-lifted', 'is-over');
+    ghost.classList.add('is-letting-go');
+    const done = () => {
+      ghost.remove();
+      document.querySelectorAll('.is-lifted-away').forEach((c) => c.classList.remove('is-lifted-away'));
+    };
+    if (chip) {
+      // Into the tag: the cover shrinks into the chip's middle, and the chip gives a little bounce.
+      const r = chip.getBoundingClientRect();
+      ghost.animate([from, {
+        translate: `${r.left + r.width / 2 - grab.dx}px ${r.top + r.height / 2 - grab.dy}px`, rotate: '0deg', scale: 0.05, opacity: 0,
+      }], { duration: 340, easing: 'cubic-bezier(0.5, 0, 0.75, 0)', fill: 'forwards' }).finished.then(done, done);
+      chip.classList.remove('is-taken');
+      void chip.offsetWidth;
+      chip.classList.add('is-taken');
+      chip.addEventListener('animationend', () => chip.classList.remove('is-taken'), { once: true });
+      giveTag(item, chip.dataset.tag);
+    } else {
+      // Nowhere to go: it glides back to its card, settling as it lands.
+      // The page may have been drawn again meanwhile, with a new card for the same playlist.
+      const home = art.isConnected ? art : document.querySelector(`.card[href="${CSS.escape(item.href)}"] .card-art`);
+      const r = home?.getBoundingClientRect() || { left: grab.left, top: grab.top };
+      ghost.animate([from, { translate: `${r.left}px ${r.top}px`, rotate: '0deg', scale: 1, opacity: home ? 1 : 0 }],
+        { duration: 420, easing: 'cubic-bezier(0.22, 1.2, 0.36, 1)', fill: 'forwards' }).finished.then(done, done);
+    }
+  }
+
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', end);
+  window.addEventListener('pointercancel', end);
 }
 
 /**
  * "Save" on a playlist's page. Once saved, it opens the pin and tag choices. Its `tagsEl` shows the
- * playlist's tags, wherever the page puts it.
+ * playlist's tags, wherever the page puts it, with a button to change them.
  */
 function saveArea(playlist) {
   const area = h('span', { class: 'save-area' });
@@ -300,8 +584,17 @@ function saveArea(playlist) {
 function drawSaveArea(area) {
   const { playlist } = area;
   const saved = collection.find(playlist.href);
-  fill(area.tagsEl, collection.tagsOf(saved).map(tagLabel));
-  area.tagsEl.hidden = !area.tagsEl.childElementCount;
+  const marks = collection.tagsOf(saved);
+  const openTags = (e) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    // Tagging a playlist keeps it in Tint.
+    if (!collection.find(playlist.href)) collection.save(playlist);
+    tagPanel(r.left, r.bottom + 6, playlist.href);
+  };
+  fill(area.tagsEl,
+    marks.map((t) => h('button', { class: 'tag-label-btn', title: 'Change the tags', onclick: openTags }, tagLabel(t))),
+    h('button', { class: 'tag-add', onclick: openTags },
+      h('span', { class: 'tag-add-icon', icon: marks.length ? 'pen' : 'plus' }), marks.length ? 'Edit tags' : 'Add a tag'));
   fill(area,
     h('button', {
       class: 'btn' + (saved ? ' is-saved' : ''),
@@ -316,7 +609,18 @@ function drawSaveArea(area) {
         const r = e.currentTarget.getBoundingClientRect();
         showMenu(r.left, r.bottom + 4, savedMenuItems(r.left, r.bottom + 4, now));
       },
-    }, h('span', { class: 'btn-icon', icon: saved ? 'saved' : 'bookmark' }), saved ? (saved.pinned ? 'Saved · Pinned' : 'Saved') : 'Save'));
+    }, h('span', { class: 'btn-icon', icon: saved ? 'saved' : 'bookmark' }), saved ? 'Saved' : 'Save'),
+    h('button', {
+      class: 'icon-btn detail-pin' + (saved?.pinned ? ' is-pinned' : ''), icon: 'pin',
+      title: saved?.pinned ? 'Unpin' : 'Pin to the top', 'aria-label': saved?.pinned ? 'Unpin' : 'Pin to the top',
+      'aria-pressed': String(!!saved?.pinned),
+      onclick: () => {
+        const now = collection.find(playlist.href);
+        if (!now) collection.save(playlist);
+        collection.setPinned(playlist.href, !now?.pinned);
+        toast(now?.pinned ? `Unpinned "${playlist.title}"` : `Pinned "${playlist.title}" to the top`);
+      },
+    }));
 }
 
 collection.onChange(() => document.querySelectorAll('.save-area').forEach(drawSaveArea));
@@ -338,12 +642,18 @@ async function liveOrSaved(href, fetching) {
   }
 }
 
+/** The tags above the playlists: one narrows the page to it, and takes a playlist dropped on it. */
 function tagFilter(all, current, onPick) {
   return h('div', { class: 'tag-filter', role: 'group', 'aria-label': 'Show playlists tagged' },
-    h('button', { class: 'tag-chip', 'aria-pressed': String(!current), onclick: () => onPick(null) }, 'Any tag'),
+    all.length ? h('button', { class: 'tag-chip', 'aria-pressed': String(!current), onclick: () => onPick(null) }, 'Any tag') : null,
     all.map((t) => tagged(h('button', {
       class: 'tag-chip', 'aria-pressed': String(current === t.id), onclick: () => onPick(current === t.id ? null : t.id),
-    }, h('span', { class: 'tag-dot' }), t.name), t.color)));
+      title: 'Show only these. Drop a playlist here to tag it', dataset: { tag: t.id },
+    }, h('span', { class: 'tag-dot' }), t.name, h('span', { class: 'tag-chip-count' }, String(tagUses(t.id)))), t.color)),
+    h('button', {
+      class: 'tag-chip tag-chip-edit', title: 'Make, rename, recolour or delete tags',
+      onclick: (e) => { const r = e.currentTarget.getBoundingClientRect(); tagPanel(r.left, r.bottom + 6, null); },
+    }, h('span', { class: 'tag-add-icon', icon: all.length ? 'pen' : 'plus' }), all.length ? 'Edit tags' : 'Make a tag'));
 }
 
 /** A grid of covers. Only the rows of it on screen exist at any time, however many it holds. */
@@ -373,28 +683,45 @@ function shelf(title, items) {
     glide = 0;
     row.classList.remove('is-gliding');
   }
+  /** Where the row can come to rest: at the start of each card, or at the very end. */
+  function restingPoints() {
+    const max = row.scrollWidth - row.clientWidth;
+    const pad = parseFloat(getComputedStyle(row).scrollPaddingLeft) || 0;
+    const origin = row.getBoundingClientRect().left - row.scrollLeft;
+    return [...[...row.children].map((card) => card.getBoundingClientRect().left - origin - pad), max]
+      .map((x) => Math.max(0, Math.min(max, x)));
+  }
+  /**
+   * Let go of: the row coasts on at the speed it was thrown and eases to a stop at a card's edge.
+   * It picks that edge itself and arrives there in one curve, so snapping never has to jump.
+   */
   function release(velocity) {
-    if (matchMedia('(prefers-reduced-motion: reduce)').matches || Math.abs(velocity) < 0.05) return;
-    // A short coast with exponential friction, independent of the display's refresh rate.
-    velocity = Math.max(-1.5, Math.min(1.5, velocity));
+    const from = row.scrollLeft;
+    const v = Math.max(-3, Math.min(3, velocity));
+    const projected = from + v * 300;
+    const target = restingPoints().reduce((best, x) => (Math.abs(x - projected) < Math.abs(best - projected) ? x : best));
+    const distance = target - from;
+    if (Math.abs(distance) < 1 || matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      row.scrollLeft = target;
+      stopGlide();
+      update();
+      return;
+    }
+    // Ease-out cubic starts at 3 × distance / duration: matched to the throw, so it leaves the hand smoothly.
+    const thrown = Math.sign(v) === Math.sign(distance) && Math.abs(v) > 0.05;
+    const duration = thrown ? Math.max(320, Math.min(950, (3 * Math.abs(distance)) / Math.abs(v))) : 420;
     row.classList.add('is-gliding');
-    let previous = performance.now();
+    const began = performance.now();
     const step = (now) => {
-      const elapsed = Math.min(40, now - previous);
-      previous = now;
-      const decay = Math.exp(-elapsed / 140);
-      const before = row.scrollLeft;
-      row.scrollLeft += velocity * 140 * (1 - decay);
-      velocity *= decay;
-      if (!row.isConnected || Math.abs(velocity) < 0.025 || Math.abs(row.scrollLeft - before) < 0.1) {
-        stopGlide(); update(); return;
-      }
+      const p = Math.min(1, (now - began) / duration);
+      row.scrollLeft = from + distance * (1 - (1 - p) ** 3);
+      if (!row.isConnected || p >= 1) { stopGlide(); update(); return; }
       glide = requestAnimationFrame(step);
     };
     glide = requestAnimationFrame(step);
   }
   row.addEventListener('wheel', stopGlide, { passive: true });
-  row.addEventListener('dragstart', (e) => e.preventDefault());
+  row.addEventListener('dragstart', (e) => e.preventDefault(), true);
   row.addEventListener('pointerdown', (e) => {
     if (e.pointerType !== 'mouse' || e.button !== 0) return;
     stopGlide();
@@ -421,11 +748,15 @@ function shelf(title, items) {
   });
   const finish = (e) => {
     if (!drag) return;
-    suppressClick = drag.moved;
-    const velocity = drag.moved && performance.now() - drag.at < 80 ? drag.velocity : 0;
+    const { moved } = drag;
+    suppressClick = moved;
+    // Held still before letting go: no throw, it just settles on the nearest card.
+    const velocity = moved && e.type === 'pointerup' && performance.now() - drag.at < 80 ? drag.velocity : 0;
     drag = null;
+    // Snapping stays off until the row has come to rest, or the browser would jump it to a card first.
+    if (moved) row.classList.add('is-gliding');
     row.classList.remove('is-dragging');
-    if (e.type === 'pointerup') release(velocity);
+    if (moved) release(velocity);
     update();
   };
   row.addEventListener('pointerup', finish);
@@ -600,13 +931,13 @@ function playlistsView() {
     let body;
     if (pinned.length) body = [section('Pinned', grid(pinned)), rest.length ? section('Everything else', grid(rest)) : null];
     else if (rest.length) body = grid(rest);
-    else if (tagWanted) body = emptyState(`Nothing tagged "${collection.tag(tagWanted).name}"`, 'Right-click a saved playlist and choose Tags… to tag it.');
+    else if (tagWanted) body = emptyState(`Nothing tagged "${collection.tag(tagWanted).name}"`, 'Drag a playlist onto this tag above, or right-click it and choose Tags….');
     else if (waiting) body = loading();
     else body = emptyState('No playlists yet', 'Playlists you make in Apple Music or YouTube Music, or save in Tint, show up here. Paste a YouTube or Spotify playlist link in the search box to open one.');
     fill(el,
       pageHead('Playlists', [plural(items.length, 'playlist'), ...notes].join('. '),
         choices.length > 2 && segmented('Show playlists from', choices, source, (v) => { memory.playlistSource = v; draw(); })),
-      allTags.length ? tagFilter(allTags, tagWanted, (id) => { memory.playlistTag = id; draw(); }) : null,
+      allTags.length || items.length ? tagFilter(allTags, tagWanted, (id) => { memory.playlistTag = id; draw(); }) : null,
       body);
   }
   draw();
@@ -816,8 +1147,8 @@ function looksSame(a, b) {
  * earlier visit, or a playlist saved in Tint, shows at once; the service's answer then replaces it
  * quietly if anything changed, and is kept for next time.
  */
-function asyncView(fetcher, build, { needsApple = true, cacheKey = null } = {}) {
-  const el = h('section', { class: 'page' }, loading());
+function asyncView(fetcher, build, { needsApple = true, cacheKey = null, waiting = loading } = {}) {
+  const el = h('section', { class: 'page' }, waiting());
   let parts = [];
   let alive = true;
   let settledAt = 0; // when the page's opening animation will have finished
@@ -848,7 +1179,7 @@ function asyncView(fetcher, build, { needsApple = true, cacheKey = null } = {}) 
       if (!alive) return;
     }
     if (early) show(early, true);
-    else fill(el, loading());
+    else fill(el, waiting());
     try {
       const data = await fetcher();
       if (!alive) return;
@@ -930,8 +1261,15 @@ function youtubeAlbumView({ scroller, params }) {
   }, { needsApple: false, cacheKey: `#/album/y/${encodeURIComponent(params[0])}` });
 }
 
+/** The playlist whose link was just pasted in the search box, so its page can say so. */
+let pastedPlaylist = null;
+export const notePasted = (id) => { pastedPlaylist = id; };
+
 function youtubePlaylistView({ scroller, params }) {
   const href = `#/playlist/y/${encodeURIComponent(params[0])}`;
+  const pasted = pastedPlaylist === params[0];
+  pastedPlaylist = null;
+  const fromLink = () => pastedNote('youtube', 'From the YouTube playlist link you pasted', 'Play it here, or save it to keep it in Tint');
   // A pasted playlist link lands here even with YouTube Music switched off.
   if (!youtube.isReady()) {
     return { el: h('section', { class: 'page' }, pageHead('Playlist'),
@@ -944,6 +1282,7 @@ function youtubePlaylistView({ scroller, params }) {
     return {
       parts: [list],
       nodes: [
+        pasted ? fromLink() : null,
         detailHead({
           art: playlist.art, kind: playlist.fromCopy ? 'Playlist (the copy saved in Tint)' : 'Playlist on YouTube Music',
           title: playlist.title, byline: playlist.artist,
@@ -954,7 +1293,12 @@ function youtubePlaylistView({ scroller, params }) {
         playlist.tracks.length ? list.el : emptyState('This playlist is empty'),
       ],
     };
-  }, { needsApple: false, cacheKey: href });
+  }, {
+    needsApple: false, cacheKey: href,
+    waiting: () => (pasted
+      ? h('div', { class: 'link-opening' }, pastedNote('youtube', 'YouTube playlist link', 'Opening the playlist…'), h('div', { class: 'match-progress-bar is-busy' }, h('span')))
+      : loading()),
+  });
 }
 
 const SERVICE_NAMES = { apple: 'Apple Music', youtube: 'YouTube Music' };
@@ -1219,8 +1563,8 @@ function searchView({ scroller, params }) {
             if (alive) draw();
           });
         };
-        fromSpotify.rematch = (prefer) => { match(prefer); draw(); };
-        match(fromSpotify.prefer);
+        // Nothing is searched until a service is chosen (see spotifyPicker).
+        fromSpotify.rematch = (prefer) => { fromSpotify.started = true; match(prefer); draw(); };
       }
     }, (e) => { fromSpotify = e instanceof Error ? e : new Error(String(e)); })
       .then(() => { if (!alive) return; lookUp(); draw(); });
@@ -1252,14 +1596,21 @@ function spotifyFound(state, songList) {
   const what = found.kind === 'album' ? 'album' : 'playlist';
   const total = found.songs.length;
   const other = state.prefer === 'youtube' ? 'apple' : 'youtube';
-  // With both services ready, the songs can be looked for on either one first.
-  const chooser = apple.instance() && youtube.isReady()
-    ? [h('span', { class: 'quiet' }, 'Look on'),
-      segmented('Look for the songs on', Object.entries(SERVICE_NAMES), state.prefer, (id) => { if (id !== state.prefer) state.rematch(id); })]
+  if (!state.started) return [spotifyPicker(state)];
+  // Once found, the songs can be looked for again on the other service first.
+  const ready = { apple: !!apple.instance(), youtube: youtube.isReady() };
+  const chooser = ready[other]
+    ? h('button', { class: 'btn', onclick: () => state.rematch(other) },
+      h('span', { class: 'btn-icon', icon: other }), `Look on ${SERVICE_NAMES[other]} instead`)
     : null;
   if (!state.matched) {
-    if (chooser) nodes.push(h('div', { class: 'spotify-tools' }, chooser));
-    nodes.push(loading(`Finding the ${what}'s songs on ${SERVICE_NAMES[state.prefer]}… ${state.done} of ${total}`));
+    nodes.push(pastedNote('spotify', `The Spotify ${what} you pasted`, found.title.trim()));
+    nodes.push(h('div', { class: 'match-progress', role: 'progressbar', 'aria-valuemin': 0, 'aria-valuemax': total, 'aria-valuenow': state.done },
+      h('div', { class: 'match-progress-head' },
+        h('span', { class: 'match-progress-icon', icon: state.prefer }),
+        h('span', {}, `Finding its songs on ${SERVICE_NAMES[state.prefer]}…`),
+        h('span', { class: 'quiet' }, `${state.done} of ${total}`)),
+      h('div', { class: 'match-progress-bar' }, h('span', { style: { width: `${total ? (state.done / total) * 100 : 0}%` } }))));
     return nodes;
   }
   const songs = state.matched.filter(Boolean);
@@ -1290,6 +1641,58 @@ function spotifyFound(state, songList) {
     nodes.push(h('p', { class: 'quiet' }, 'Not found: ' + missing.map((song) => `${song.title} (${song.artist})`).join(', ') + '.'));
   }
   return nodes;
+}
+
+/** A line saying where a page came from: the link that was pasted, with its service's mark. */
+function pastedNote(service, what, name) {
+  return h('div', { class: 'pasted-note pasted-' + service },
+    h('span', { class: 'pasted-icon', icon: service }),
+    h('span', { class: 'pasted-text' }, h('span', { class: 'quiet' }, what), h('strong', {}, name)));
+}
+
+/**
+ * A pasted Spotify album or playlist, before anything is searched: which service to find its
+ * songs on. The main service is chosen to start with; one not set up can't be picked.
+ */
+function spotifyPicker(state) {
+  const { found } = state;
+  const what = found.kind === 'album' ? 'album' : 'playlist';
+  const ready = { apple: !!apple.instance(), youtube: youtube.isReady() };
+  if (!ready[state.prefer] && ready[state.prefer === 'apple' ? 'youtube' : 'apple']) state.prefer = state.prefer === 'apple' ? 'youtube' : 'apple';
+  const start = h('button', { class: 'btn primary', onclick: () => state.rematch(state.prefer) });
+  const label = () => fill(start, h('span', { class: 'btn-icon', icon: 'search' }), `Find the songs on ${SERVICE_NAMES[state.prefer]}`);
+  label();
+  const notes = {
+    apple: !ready.apple ? 'Set up Apple Music in Settings to use it.'
+      : ready.youtube ? 'Songs it lacks are looked for on YouTube Music.' : 'Each song is looked for in its catalog.',
+    youtube: !ready.youtube ? 'Switch on YouTube Music in Settings to use it.'
+      : ready.apple ? 'Songs it lacks are looked for on Apple Music.' : 'Each song is looked for in its catalog.',
+  };
+  const art = found.art ? { url: found.art } : found.songs[0]?.art;
+  return h('div', { class: 'spotify-picker' },
+    h('div', { class: 'spotify-picker-head' },
+      h('div', { class: 'spotify-picker-art' }, cover(art, 120, { lazy: false }), h('span', { class: 'spotify-badge', icon: 'spotify' })),
+      h('div', {},
+        h('p', { class: 'quiet' }, `Spotify ${what} from the link you pasted`),
+        h('h2', {}, found.title.trim()),
+        h('p', { class: 'quiet' }, [found.artist?.trim(), plural(found.songs.length, 'song')].filter(Boolean).join(' · ')))),
+    !ready.apple && !ready.youtube
+      ? emptyState('Nowhere to look yet', "Spotify's songs can't be played here, so Tint finds the same songs on Apple Music or YouTube Music. Set one of them up first.", linkButton('Open settings', '#/settings', 'primary'))
+      : [
+        h('h3', { class: 'spotify-picker-ask' }, 'Where should Tint find these songs?'),
+        h('div', { class: 'welcome-choices spotify-choices', role: 'radiogroup', 'aria-label': 'Where to find the songs' },
+          ['apple', 'youtube'].map((id) => h('label', { class: 'welcome-choice' + (ready[id] ? '' : ' is-off') },
+            h('input', {
+              type: 'radio', name: 'spotify-service', value: id, checked: state.prefer === id, disabled: !ready[id],
+              onchange: () => { state.prefer = id; label(); },
+            }),
+            h('span', { class: 'welcome-choice-icon', icon: id }),
+            h('span', { class: 'welcome-choice-text' },
+              h('strong', {}, SERVICE_NAMES[id], prefs.mainService === id ? h('span', { class: 'choice-mark' }, 'Main') : null),
+              h('span', { class: 'quiet' }, notes[id]))))),
+        h('div', { class: 'spotify-picker-go' }, start,
+          what === 'playlist' && found.songs.length === 100 ? h('span', { class: 'quiet' }, 'Only the first 100 songs of a playlist can be read from Spotify.') : null),
+      ]);
 }
 
 /** Where a Spotify list lives once it is saved in Tint. The same link always lands on the same playlist. */
@@ -1330,6 +1733,7 @@ function pickBackup(done) {
 function welcomeView() {
   const el = h('section', { class: 'page welcome' });
   let choice = ['apple', 'youtube', 'pc'].includes(prefs.mainService) ? prefs.mainService : null;
+  const returning = !!choice;
   let busy = false;
   const start = h('button', { class: 'btn primary', onclick: () => finish() }, 'Start listening');
   const services = [
@@ -1366,7 +1770,10 @@ function welcomeView() {
   function draw() {
     ready();
     fill(el,
-      pageHead('Welcome to Tint', 'Two questions, and then the music.'),
+      // Someone updating already has a main service, read from their setup: nothing of theirs changes.
+      returning
+        ? pageHead('Welcome to the new Tint', 'Tint now starts by asking two things. Your playlists, library and settings are just as they were.')
+        : pageHead('Welcome to Tint', 'Two questions, and then the music.'),
       h('section', { class: 'welcome-step' },
         h('h2', {}, 'Where do you listen most?'),
         h('p', { class: 'quiet' }, 'Songs from links to other services, like Spotify, are looked for there first. This can be changed in Settings.'),

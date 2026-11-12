@@ -41,6 +41,13 @@ sealed class Settings
     public string MainService { get; set; } = "";
     /// <summary>Whether the first-run welcome was answered. Null in settings from before it existed.</summary>
     public bool? Welcomed { get; set; }
+    /// <summary>Which welcome was last answered. Raising <see cref="WelcomeVersion"/> shows the welcome once more to everyone.</summary>
+    public int WelcomeSeen { get; set; }
+    public const int WelcomeVersion = 1;
+
+    /// <summary>Whether the welcome is done with: answered, and in its current form.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool WelcomeDone => Welcomed == true && WelcomeSeen >= WelcomeVersion;
 
     public int[]? Bounds { get; set; }
     public bool Maximized { get; set; }
