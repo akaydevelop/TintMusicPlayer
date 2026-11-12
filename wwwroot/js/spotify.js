@@ -4,6 +4,7 @@
 import { get } from './api.js';
 import * as apple from './apple.js';
 import * as youtube from './youtube.js';
+import { prefs } from './prefs.js';
 
 /** { kind, id } for a Spotify track, album or playlist link (or spotify: address), or null. */
 export function linkIn(text) {
@@ -36,17 +37,26 @@ export async function onYouTube(song) {
   return youtube.findSong(song).catch(() => null);
 }
 
+/** Where a link's songs are looked for first: the main service chosen at the welcome, when it is ready. */
+export function firstChoice() {
+  const ready = { apple: !!apple.instance(), youtube: youtube.isReady() };
+  if (ready[prefs.mainService]) return prefs.mainService;
+  return ready.apple || !ready.youtube ? 'apple' : 'youtube';
+}
+
 /**
- * Each song of a list on Apple Music where it's there, otherwise on YouTube Music, in the list's
- * order. A few are asked at a time; `progress(done, total)` is told as they come in.
+ * Each song found on `prefer` ('apple' or 'youtube'), or on the other service when that one lacks
+ * it; null where neither has it. In the list's order; a few are asked at a time, and
+ * `progress(done, total)` is told as they come in. `stopped()` ends it early when no one is waiting.
  */
-export async function matchAll(songs, progress) {
+export async function matchAll(songs, progress, prefer = firstChoice(), stopped = () => false) {
   const found = new Array(songs.length).fill(null);
+  const [first, second] = prefer === 'youtube' ? [onYouTube, onApple] : [onApple, onYouTube];
   let next = 0, done = 0;
   async function worker() {
-    while (next < songs.length) {
+    while (next < songs.length && !stopped()) {
       const i = next++;
-      found[i] = (await onApple(songs[i])) || (await onYouTube(songs[i]));
+      found[i] = (await first(songs[i])) || (await second(songs[i]));
       progress?.(++done, songs.length);
     }
   }

@@ -11,6 +11,9 @@ export const prefs = {
   youtubePlayer: 'page', // page | ytdlp
   pauseFadeMs: 150,  // how long playing and pausing fade in and out
   crossfadeMs: 800,  // how long a skipped song fades into the next
+  cacheKeepDays: 30, // page copies unused this long are forgotten (0 = never)
+  mainService: '',   // apple | youtube | pc: where songs from elsewhere are looked for first
+  welcomed: true,    // false until the first-run welcome is answered
 };
 
 const listeners = new Set();

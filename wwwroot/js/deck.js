@@ -5,7 +5,8 @@ import * as player from './player.js';
 import { englishTitle } from './apple.js';
 import { prefs, onChange as onPrefs } from './prefs.js';
 import { post } from './api.js';
-import { $, h, icon, fmtTime, artSrc, cover, toast, replay, showMenu } from './ui.js';
+import { $, h, icon, fmtTime, artSrc, cover, toast, replay, showMenu, copyText } from './ui.js';
+import * as closer from './closer.js';
 import { linkFor, share } from './youtube.js';
 import { artistHref } from './artist.js';
 import { paletteOf, themeFrom, applyTheme, IDLE_THEME } from './palette.js';
@@ -77,16 +78,30 @@ export function initDeck() {
   els['deck-artist'].setAttribute('role', 'link');
   els['deck-artist'].addEventListener('click', toArtist);
   els['deck-artist'].addEventListener('keydown', (e) => { if (e.key === 'Enter') toArtist(); });
-  // Right-clicking the song playing offers its YouTube Music link too.
+  // Right-clicking the song playing offers to copy it, see it closer, or share its YouTube Music link.
   for (const part of [els['deck-art'], els['deck-title'].closest('.deck-text')]) {
     part.addEventListener('contextmenu', (e) => {
       const track = player.current();
       if (!track) return;
       e.preventDefault();
       linkFor(track).catch(() => {});
-      showMenu(e.clientX, e.clientY, [{ label: 'Share YouTube Music link', run: () => share(track) }]);
+      showMenu(e.clientX, e.clientY, [
+        { label: 'See it closer', run: closer.open },
+        { label: 'Copy title', run: () => copyText(track.title, 'Title copied') },
+        track.artist && { label: 'Copy title and artist', run: () => copyText(`${track.title} - ${track.artist}`, 'Title and artist copied') },
+        { label: 'Share YouTube Music link', run: () => share(track) },
+      ]);
     });
   }
+  // Clicking the cover or the title shows the song up close.
+  // The cover is the button for it (and takes the keyboard); the title stays the heading it is.
+  els['deck-art'].setAttribute('role', 'button');
+  for (const part of [els['deck-art'], els['deck-title']]) {
+    part.addEventListener('click', () => { if (player.current()) closer.open(); });
+  }
+  els['deck-art'].addEventListener('keydown', (e) => {
+    if ((e.key === 'Enter' || e.key === ' ') && player.current()) { e.preventDefault(); e.stopPropagation(); closer.open(); }
+  });
   els['b-mute'].addEventListener('click', () => player.setVolume(player.state.volume || 0.5, { muted: !player.state.muted }));
 
   const seek = els.seek;
@@ -154,7 +169,11 @@ function drawTrack() {
   els['deck-artist'].classList.toggle('is-link', !!track?.artist);
   els['deck-artist'].tabIndex = track?.artist ? 0 : -1;
   els['deck-artist'].title = track?.artist ? `Go to ${track.artist}` : '';
-  els['deck-title'].title = track ? track.title : '';
+  els['deck-title'].title = track ? `${track.title}. Click to see it closer` : '';
+  els['deck-art'].title = track ? 'See it closer' : '';
+  els['deck-art'].setAttribute('aria-label', track ? `Cover of ${track.album || track.title}. See it closer` : 'Nothing playing');
+  els['deck-art'].tabIndex = track ? 0 : -1;
+  for (const part of [els['deck-art'], els['deck-title']]) part.classList.toggle('is-openable', !!track);
   els['b-share'].hidden = !track;
   els['b-lyrics'].hidden = !track;
   const secondary = els['deck-title-english'];

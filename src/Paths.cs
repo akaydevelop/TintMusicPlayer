@@ -34,6 +34,8 @@ static class Paths
     public static readonly string SignInData = Path.Combine(Data, "google-signin");
     public static readonly string SettingsFile = Path.Combine(Data, "settings.json");
     public static readonly string LibraryFile = Path.Combine(Data, "library.json");
+    /// <summary>Playlists saved in Tint, with their pins and tags (collection.js keeps the shape).</summary>
+    public static readonly string CollectionFile = Path.Combine(Data, "collection.json");
 
     /// <summary>The folder the UI is served from. In dev mode this is the source tree, so edits show up on reload.</summary>
     public static string WebRoot(bool dev)

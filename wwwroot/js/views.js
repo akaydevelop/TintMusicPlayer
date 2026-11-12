@@ -2,11 +2,15 @@
 // `refresh` is called when the data behind the page changes (a scan finished, more of the Apple
 // Music library arrived, a different song started).
 
-import { h, fill, cover, fmtTime, fmtLength, plural, showMenu, toast, replay, VirtualList } from './ui.js';
+import { h, fill, cover, fmtTime, fmtLength, plural, showMenu, showPopover, closeMenu, toast, replay, fadeInWhenSeen, copyText, VirtualList, VirtualGrid } from './ui.js';
 import * as player from './player.js';
 import * as apple from './apple.js';
 import * as youtube from './youtube.js';
 import * as spotify from './spotify.js';
+import * as collection from './collection.js';
+import * as history from './history.js';
+import * as pagecache from './pagecache.js';
+import * as backup from './backup.js';
 import * as update from './update.js';
 import { local, compareText, searchLocal, nudge } from './library.js';
 import { get, post } from './api.js';
@@ -18,7 +22,7 @@ import { profile as artistProfile, artistHref } from './artist.js';
 const ROW = 52;
 
 // Choices that should survive moving between pages (but not a restart).
-const memory = { albumSource: 'all', albumSort: 'artist', songSource: 'all', songSort: 'artist', playlistSource: 'all' };
+const memory = { albumSource: 'all', albumSort: 'artist', songSource: 'all', songSort: 'artist', playlistSource: 'all', playlistTag: null };
 
 // ---- shared pieces ------------------------------------------------------------------------------
 
@@ -74,6 +78,7 @@ function trackMenu(x, y, track) {
     { label: 'Add to queue', run: () => { player.addToQueue([track]); toast(`Added "${track.title}" to the queue`); } },
     track.artist && { label: 'Go to artist', run: () => { location.hash = artistHref(track); } },
     track.albumHref && { label: 'Go to album', run: () => { location.hash = track.albumHref; } },
+    { label: 'Copy title', run: () => copyText(track.title, 'Title copied') },
     { label: 'Share YouTube Music link', run: () => youtube.share(track) },
   ]);
 }
@@ -84,6 +89,7 @@ function trackRow(tracks, i, { numbered = false, showAlbum = true, albumArtist =
   const play = () => {
     if (track.playable === false) return toast(track.reason || "This song can't be played.");
     player.playList(tracks, i);
+    pagecache.used(location.hash);
   };
 
   let lead;
@@ -114,26 +120,49 @@ function trackRow(tracks, i, { numbered = false, showAlbum = true, albumArtist =
     }));
 }
 
-/** A track list. Long lists are windowed; short ones are plain so they can sit mid-page. */
+// Set while a page swaps a kept copy for the service's newer answer, so nothing on it fades in again.
+let calmDraw = false;
+
+/**
+ * A track list. Only the rows on screen (and a few either side) exist at any time, however long it
+ * is. `only` limits it to some of `tracks` (one disc of an album), still playing from the whole.
+ */
 function trackList(scroller, tracks, options = {}) {
-  if (tracks.length <= 60) {
-    const el = h('div', { class: 'tracks', role: 'list' });
-    const draw = () => fill(el, ...tracks.map((_, i) => trackRow(tracks, i, options)));
-    draw();
-    return { el, refresh: draw, destroy() {} };
-  }
-  const list = new VirtualList({
-    scroller, rowHeight: ROW, count: tracks.length, className: 'tracks',
-    render: (i) => trackRow(tracks, i, options),
-  });
+  const only = options.only || null;
+  const count = only ? only.length : tracks.length;
+  // Each song fades in the first time it comes into view. Redrawn rows (a new song started, or the
+  // list moving its window) that were already seen stay put.
+  const seen = new Set(calmDraw ? Array.from({ length: count }, (_, i) => i) : []);
+  const row = (i) => {
+    const el = trackRow(tracks, only ? only[i] : i, options);
+    return seen.has(i) ? el : fadeInWhenSeen(el, () => seen.add(i));
+  };
+  const list = new VirtualList({ scroller, rowHeight: ROW, count, className: 'tracks', render: row });
   return { el: list.el, refresh: () => list.refresh(), destroy: () => list.destroy() };
 }
 
 async function tracksOf(item) {
-  if (item.tracks) return item.tracks;
+  if (item.source === 'tint') return collection.find(item.href)?.tracks || item.tracks || [];
+  const saved = collection.find(item.href);
+  if (item.tracks && !saved) return item.tracks;
+  pagecache.used(item.href);
+  const isPlaylist = item.href.includes('#/playlist/');
   const from = item.source === 'youtube' ? youtube : apple;
-  const detail = item.href.includes('#/playlist/') ? await from.playlist(item.id) : await from.album(item.id);
-  return detail.tracks;
+  const live = (isPlaylist ? from.playlist(item.id) : from.album(item.id)).then((detail) => {
+    pagecache.keep(item.href, isPlaylist ? { ...detail, href: item.href } : detail);
+    return detail.tracks;
+  });
+  live.catch(() => {}); // heard below, or not needed
+  // A kept copy plays at once; the service's answer still freshens the copy for next time.
+  const copy = await pagecache.read(item.href);
+  if (copy?.tracks?.length) return copy.tracks;
+  try {
+    return await live;
+  } catch (e) {
+    // A playlist saved in Tint still plays from the copy kept with it.
+    if (saved?.tracks?.length) return saved.tracks;
+    throw e;
+  }
 }
 
 function card(item) {
@@ -148,15 +177,177 @@ function card(item) {
       toast(err?.message || "That couldn't be played.");
     }
   };
-  return h('a', { class: 'card', href: item.href, title: item.title },
+  const isPlaylist = item.href.includes('#/playlist/');
+  const saved = isPlaylist ? collection.find(item.href) : null;
+  const marks = collection.tagsOf(saved);
+  const el = h('a', {
+    class: 'card', href: item.href, title: item.title,
+    oncontextmenu: isPlaylist ? (e) => { e.preventDefault(); playlistMenu(e.clientX, e.clientY, item); } : null,
+  },
     h('span', { class: 'card-art' },
       cover(item.art, 200),
+      saved?.pinned && h('span', { class: 'card-pin', icon: 'pin', title: 'Pinned' }),
       item.href.includes('#/artist/') ? null : h('button', { class: 'card-play', icon: 'play', 'aria-label': `Play ${item.title}`, onclick: playIt })),
     h('span', { class: 'card-title' }, item.title),
-    item.artist && h('span', { class: 'card-sub' }, item.artist));
+    item.artist && h('span', { class: 'card-sub' }, item.artist),
+    marks.length ? h('span', { class: 'card-tags' }, marks.map(tagLabel)) : null);
+  // Each card glides in the first time it comes into view, and stays still when a page redraws.
+  return cardsSeen.has(item.href) ? el : fadeInWhenSeen(el, () => cardsSeen.add(item.href));
 }
 
-const grid = (items) => h('div', { class: 'grid' }, items.map(card));
+const cardsSeen = new Set();
+
+// ---- saved playlists, pins and tags -------------------------------------------------------------
+
+/** Gives an element its tag's colour, which the stylesheet reads as --tag. */
+function tagged(el, color) {
+  el.style.setProperty('--tag', color);
+  return el;
+}
+
+const tagLabel = (t) => tagged(h('span', { class: 'tag-label' }, h('span', { class: 'tag-dot' }), t.name), t.color);
+const nextColor = (color) => collection.COLORS[(collection.COLORS.indexOf(color) + 1) % collection.COLORS.length];
+
+async function saveInTint(item) {
+  try {
+    const tracks = item.tracks || await tracksOf(item);
+    collection.save({ ...item, tracks });
+    toast(`Saved "${item.title}" in Tint`);
+  } catch (e) {
+    toast(e?.message || "That playlist couldn't be saved.");
+  }
+}
+
+/** What can be done with a saved playlist: pin it, tag it, or let it go. */
+function savedMenuItems(x, y, saved) {
+  return [
+    { label: saved.pinned ? 'Unpin' : 'Pin to the top', run: () => collection.setPinned(saved.href, !saved.pinned) },
+    { label: 'Tags…', run: () => tagPanel(x, y, saved.href) },
+    { label: 'Remove from Tint', run: () => { collection.remove(saved.href); toast(`Removed "${saved.title}" from Tint`); } },
+  ];
+}
+
+function playlistMenu(x, y, item) {
+  const saved = collection.find(item.href);
+  showMenu(x, y, saved ? savedMenuItems(x, y, saved) : [{ label: 'Save in Tint', run: () => saveInTint(item) }]);
+}
+
+/** Choosing a saved playlist's tags, and making, recolouring and deleting tags. */
+function tagPanel(x, y, href) {
+  const panel = h('div', { class: 'tag-panel', role: 'dialog', 'aria-label': 'Tags' });
+  let color = collection.COLORS[collection.tags().length % collection.COLORS.length];
+
+  function draw() {
+    const item = collection.find(href);
+    if (!item) { closeMenu(); return null; }
+    const name = h('input', {
+      type: 'text', placeholder: 'New tag', maxLength: 40, 'aria-label': 'Name of a new tag', spellcheck: false,
+      onkeydown: (e) => { if (e.key === 'Enter') add(); },
+    });
+    function add() {
+      const made = collection.addTag(name.value, color);
+      if (!made) { name.focus(); return; }
+      if (!item.tags.includes(made.id)) collection.toggleTag(href, made.id);
+      color = nextColor(color);
+      draw()?.focus();
+    }
+    fill(panel,
+      h('p', { class: 'tag-panel-title' }, `Tags for "${item.title}"`),
+      collection.tags().map((t) => {
+        const on = item.tags.includes(t.id);
+        return h('div', { class: 'tag-option' },
+          tagged(h('button', {
+            class: 'tag-swatch', title: 'Change colour', 'aria-label': `Change the colour of ${t.name}`,
+            onclick: () => { collection.editTag(t.id, { color: nextColor(t.color) }); draw(); },
+          }), t.color),
+          h('button', {
+            class: 'tag-name', role: 'menuitemcheckbox', 'aria-checked': String(on),
+            onclick: () => { collection.toggleTag(href, t.id); draw(); },
+          }, h('span', {}, t.name), h('span', { class: 'tag-check', 'aria-hidden': 'true' }, on ? '✓' : '')),
+          h('button', {
+            class: 'icon-btn small tag-delete', icon: 'close', title: 'Delete this tag everywhere', 'aria-label': `Delete the tag ${t.name}`,
+            onclick: () => { collection.deleteTag(t.id); toast(`Deleted the tag "${t.name}"`); draw(); },
+          }));
+      }),
+      collection.tags().length ? null : h('p', { class: 'quiet tag-panel-hint' }, 'Make a tag, then use it on as many playlists as you like.'),
+      h('div', { class: 'tag-new' }, name, h('button', { class: 'btn', onclick: add }, 'Add')),
+      h('div', { class: 'tag-colors', role: 'radiogroup', 'aria-label': 'Colour of the new tag' },
+        collection.COLORS.map((c) => tagged(h('button', {
+          class: 'tag-swatch', role: 'radio', 'aria-checked': String(c === color), 'aria-label': `Colour ${c}`,
+          onclick: () => { color = c; draw()?.focus(); },
+        }), c))));
+    return name;
+  }
+
+  const input = draw();
+  if (!input) return;
+  showPopover(x, y, panel);
+  input.focus();
+}
+
+/**
+ * "Save" on a playlist's page. Once saved, it opens the pin and tag choices. Its `tagsEl` shows the
+ * playlist's tags, wherever the page puts it.
+ */
+function saveArea(playlist) {
+  const area = h('span', { class: 'save-area' });
+  area.playlist = playlist;
+  area.tagsEl = h('div', { class: 'detail-tags' });
+  drawSaveArea(area);
+  return area;
+}
+
+function drawSaveArea(area) {
+  const { playlist } = area;
+  const saved = collection.find(playlist.href);
+  fill(area.tagsEl, collection.tagsOf(saved).map(tagLabel));
+  area.tagsEl.hidden = !area.tagsEl.childElementCount;
+  fill(area,
+    h('button', {
+      class: 'btn' + (saved ? ' is-saved' : ''),
+      title: saved ? 'Saved in Tint. Pin it or tag it' : 'Keep this playlist in Tint',
+      onclick: (e) => {
+        const now = collection.find(playlist.href);
+        if (!now) {
+          collection.save(playlist);
+          toast(`Saved "${playlist.title}" in Tint`);
+          return;
+        }
+        const r = e.currentTarget.getBoundingClientRect();
+        showMenu(r.left, r.bottom + 4, savedMenuItems(r.left, r.bottom + 4, now));
+      },
+    }, h('span', { class: 'btn-icon', icon: saved ? 'saved' : 'bookmark' }), saved ? (saved.pinned ? 'Saved · Pinned' : 'Saved') : 'Save'));
+}
+
+collection.onChange(() => document.querySelectorAll('.save-area').forEach(drawSaveArea));
+
+/** A playlist as the service has it now, or as it was saved in Tint when the service can't be reached. */
+async function liveOrSaved(href, fetching) {
+  try {
+    const playlist = { ...await fetching, href };
+    // A saved playlist's copy of its songs follows the playlist as it changes.
+    const saved = collection.find(href);
+    if (saved && playlist.tracks.length && !looksSame({ ...saved, description: playlist.description }, playlist)) {
+      collection.save({ ...playlist, id: saved.id, source: saved.source });
+    }
+    return playlist;
+  } catch (e) {
+    const saved = collection.find(href);
+    if (saved?.tracks?.length) return { ...saved, description: '', fromCopy: true };
+    throw e;
+  }
+}
+
+function tagFilter(all, current, onPick) {
+  return h('div', { class: 'tag-filter', role: 'group', 'aria-label': 'Show playlists tagged' },
+    h('button', { class: 'tag-chip', 'aria-pressed': String(!current), onclick: () => onPick(null) }, 'Any tag'),
+    all.map((t) => tagged(h('button', {
+      class: 'tag-chip', 'aria-pressed': String(current === t.id), onclick: () => onPick(current === t.id ? null : t.id),
+    }, h('span', { class: 'tag-dot' }), t.name), t.color)));
+}
+
+/** A grid of covers. Only the rows of it on screen exist at any time, however many it holds. */
+const grid = (items) => new VirtualGrid({ scroller: document.getElementById('scroller'), count: items.length, render: (i) => card(items[i]) }).el;
 
 function shelf(title, items) {
   const row = h('div', { class: 'shelf-row', tabIndex: 0, 'aria-label': title }, items.map(card));
@@ -378,26 +569,102 @@ function playlistsView() {
       apple.isSignedIn() && ['Apple Music', apple.libraryPlaylists()],
       youtube.isSignedIn() && ['YouTube Music', youtube.libraryPlaylists()],
     ].filter(Boolean);
-    if (!parts.length) {
-      fill(el, pageHead('Playlists'), connectPrompt('Your playlists live in Apple Music and YouTube Music'));
+    const saved = collection.items();
+    if (!parts.length && !saved.length) {
+      fill(el, pageHead('Playlists'), connectPrompt('Your playlists live in Apple Music and YouTube Music'),
+        h('p', { class: 'quiet' }, 'Or paste a YouTube or Spotify playlist link in the search box to open it and save it here.'));
       return;
     }
-    // With both services signed in, the list can be narrowed to one of them.
-    const choices = [['all', 'All'], ...parts.map(([name]) => [name, name])];
+    // The list can be narrowed to the playlists saved in Tint, or to one service's.
+    const choices = [['all', 'All'], saved.length && ['saved', 'Saved in Tint'], ...parts.map(([name]) => [name, name])].filter(Boolean);
     const source = choices.some(([id]) => id === memory.playlistSource) ? memory.playlistSource : 'all';
-    const items = parts.filter(([name]) => source === 'all' || source === name).flatMap(([, part]) => part.items)
-      .sort((a, b) => compareText(a.title, b.title));
+    // A saved playlist stands in for the same one in a service's library, so it shows once.
+    const savedHere = new Set(saved.map((item) => item.href));
+    let items = [
+      ...(source === 'all' || source === 'saved' ? saved : []),
+      ...parts.filter(([name]) => source === 'all' || source === name).flatMap(([, part]) => part.items)
+        .filter((item) => source !== 'all' || !savedHere.has(item.href)),
+    ];
+    const allTags = collection.tags();
+    const tagWanted = allTags.some((t) => t.id === memory.playlistTag) ? memory.playlistTag : null;
+    if (tagWanted) items = items.filter((item) => collection.find(item.href)?.tags?.includes(tagWanted));
+    items.sort((a, b) => compareText(a.title, b.title));
+    // Pinned playlists come first, in the order they were pinned.
+    const pinnedAt = (item) => collection.find(item.href)?.pinnedAt || 0;
+    const pinned = items.filter((item) => collection.find(item.href)?.pinned).sort((a, b) => pinnedAt(a) - pinnedAt(b));
+    const rest = items.filter((item) => !pinned.includes(item));
+
     const notes = parts.map(([name, part]) => libraryNote(name, part)).filter(Boolean);
     const waiting = parts.some(([, part]) => part.state === 'idle' || part.state === 'loading');
+    const section = (title, body) => h('section', { class: 'shelf' }, h('h2', {}, title), body);
+    let body;
+    if (pinned.length) body = [section('Pinned', grid(pinned)), rest.length ? section('Everything else', grid(rest)) : null];
+    else if (rest.length) body = grid(rest);
+    else if (tagWanted) body = emptyState(`Nothing tagged "${collection.tag(tagWanted).name}"`, 'Right-click a saved playlist and choose Tags… to tag it.');
+    else if (waiting) body = loading();
+    else body = emptyState('No playlists yet', 'Playlists you make in Apple Music or YouTube Music, or save in Tint, show up here. Paste a YouTube or Spotify playlist link in the search box to open one.');
     fill(el,
       pageHead('Playlists', [plural(items.length, 'playlist'), ...notes].join('. '),
-        parts.length > 1 && segmented('Show playlists from', choices, source, (v) => { memory.playlistSource = v; draw(); })),
-      items.length ? grid(items)
-        : waiting ? loading()
-          : emptyState('No playlists yet', 'Playlists you make in Apple Music or YouTube Music will show up here.'));
+        choices.length > 2 && segmented('Show playlists from', choices, source, (v) => { memory.playlistSource = v; draw(); })),
+      allTags.length ? tagFilter(allTags, tagWanted, (id) => { memory.playlistTag = id; draw(); }) : null,
+      body);
   }
   draw();
   return { el, refresh: (why) => { if (why !== 'track') draw(); } };
+}
+
+// ---- Home ---------------------------------------------------------------------------------------
+
+/** The page Tint opens on: pinned playlists, what was played lately, and what's new. */
+function startView({ scroller }) {
+  const el = h('section', { class: 'page' });
+  let parts = [];
+  let firstPlayed = null;
+
+  function greeting() {
+    const hour = new Date().getHours();
+    return hour < 5 ? 'Good night' : hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
+  }
+
+  function draw() {
+    parts.forEach((p) => p.destroy());
+    parts = [];
+    const saved = collection.items();
+    const pinned = saved.filter((item) => item.pinned).sort((a, b) => (a.pinnedAt || 0) - (b.pinnedAt || 0));
+    const lately = saved.filter((item) => !item.pinned).sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0)).slice(0, 14);
+    const played = history.songs().slice(0, 8);
+    const added = local.albums.filter((album) => album.added).sort((a, b) => b.added - a.added).slice(0, 14);
+    firstPlayed = played[0]?.id || null;
+
+    const nodes = [pageHead(greeting())];
+    if (pinned.length) nodes.push(shelf('Pinned', pinned));
+    if (played.length) {
+      const list = trackList(scroller, played);
+      parts.push(list);
+      nodes.push(h('section', { class: 'shelf' }, h('h2', {}, 'Played lately'), list.el));
+    }
+    if (lately.length) nodes.push(shelf('Saved in Tint', lately));
+    if (added.length) nodes.push(shelf('Added to this PC lately', added));
+    if (nodes.length === 1) {
+      nodes.push(emptyState('Welcome to Tint',
+        'Play something and it shows up here. Paste a YouTube playlist link in the search box to open it, then save and pin it to keep it on this page.',
+        linkButton('Browse albums', '#/albums', 'primary'), linkButton('Playlists', '#/playlists')));
+    } else if (!pinned.length) {
+      nodes.splice(1, 0, h('p', { class: 'quiet home-hint' }, 'Pin a saved playlist and it stays at the top of this page.'));
+    }
+    fill(el, ...nodes);
+  }
+
+  draw();
+  return {
+    el,
+    refresh: (why) => {
+      // A new song only redraws the page when it changes what was played lately.
+      if (why === 'track' && history.songs()[0]?.id === firstPlayed) parts.forEach((p) => p.refresh());
+      else if (why === 'track' || why === 'collection' || why === 'local') draw();
+    },
+    destroy: () => parts.forEach((p) => p.destroy()),
+  };
 }
 
 // ---- Listen now ---------------------------------------------------------------------------------
@@ -432,8 +699,9 @@ function homeView() {
 
 // ---- Album, playlist ----------------------------------------------------------------------------
 
-function detailHead({ art, kind, title, byline, bylineHref, facts, description, tracks }) {
+function detailHead({ art, kind, title, byline, bylineHref, facts, description, tracks, saveAs }) {
   const playable = tracks.filter((t) => t.playable !== false);
+  const save = saveAs && saveArea(saveAs);
   return h('header', { class: 'detail-head' },
     h('div', { class: 'detail-art' }, cover(art, 240, { lazy: false })),
     h('div', { class: 'detail-text' },
@@ -442,11 +710,13 @@ function detailHead({ art, kind, title, byline, bylineHref, facts, description, 
       byline && (bylineHref ? h('a', { class: 'detail-by', href: bylineHref }, byline) : h('p', { class: 'detail-by' }, byline)),
       facts && h('p', { class: 'quiet' }, facts),
       description && h('p', { class: 'detail-desc' }, description),
+      save?.tagsEl,
       h('div', { class: 'detail-actions' },
-        h('button', { class: 'btn primary', disabled: !playable.length, onclick: () => player.playList(tracks, 0, { shuffle: false }) },
+        h('button', { class: 'btn primary', disabled: !playable.length, onclick: () => { player.playList(tracks, 0, { shuffle: false }); pagecache.used(location.hash); } },
           h('span', { class: 'btn-icon', icon: 'play' }), 'Play'),
-        h('button', { class: 'btn', disabled: playable.length < 2, onclick: () => player.playList(tracks, 0, { shuffle: true }) },
+        h('button', { class: 'btn', disabled: playable.length < 2, onclick: () => { player.playList(tracks, 0, { shuffle: true }); pagecache.used(location.hash); } },
           h('span', { class: 'btn-icon', icon: 'shuffle' }), 'Shuffle'),
+        save,
         h('button', {
           class: 'icon-btn', icon: 'more', 'aria-label': 'More', title: 'More', disabled: !playable.length,
           onclick: (e) => {
@@ -454,6 +724,7 @@ function detailHead({ art, kind, title, byline, bylineHref, facts, description, 
             showMenu(r.left, r.bottom + 4, [
               { label: 'Play next', run: () => { player.playNext(tracks); toast(`"${title}" plays next`); } },
               { label: 'Add to queue', run: () => { player.addToQueue(tracks); toast(`Added "${title}" to the queue`); } },
+              { label: 'Copy title', run: () => copyText(title, 'Title copied') },
             ]);
           },
         }))));
@@ -474,14 +745,9 @@ function albumBody(scroller, tracks, albumArtist) {
   const discs = [...new Set(tracks.map((t) => t.discNo || 1))];
   if (discs.length < 2) return [trackList(scroller, tracks, options)];
   return discs.map((disc) => {
-    const mine = tracks.filter((t) => (t.discNo || 1) === disc);
-    const list = {
-      el: h('div', { class: 'tracks', role: 'list' }),
-      refresh() { fill(this.el, mine.map((t) => trackRow(tracks, tracks.indexOf(t), options))); },
-      destroy() {},
-    };
-    list.refresh();
-    return { el: h('section', { class: 'disc' }, h('h2', {}, `Disc ${disc}`), list.el), refresh: () => list.refresh(), destroy() {} };
+    const only = tracks.map((t, i) => ((t.discNo || 1) === disc ? i : -1)).filter((i) => i >= 0);
+    const list = trackList(scroller, tracks, { ...options, only });
+    return { el: h('section', { class: 'disc' }, h('h2', {}, `Disc ${disc}`), list.el), refresh: list.refresh, destroy: list.destroy };
   });
 }
 
@@ -521,22 +787,83 @@ function localAlbumView({ scroller, params }) {
  * A page that has to fetch before it can draw. `build(data)` returns { nodes, parts }.
  * Apple Music pages offer to set Apple Music up when it isn't; YouTube pages need no setup to read.
  */
-function asyncView(fetcher, build, { needsApple = true } = {}) {
+/**
+ * A playlist, album or artist page opens in a quick cascade: the cover grows into place, the words
+ * beside it rise line by line, and the first songs follow.
+ */
+function opening(el) {
+  el.classList.remove('arrive', 'opening');
+  el.querySelectorAll('.detail-text > *').forEach((line, i) => line.style.setProperty('--i', i));
+  // A long list draws its rows in the next frame (VirtualList), so they're numbered then, before it's shown.
+  const number = () => el.querySelectorAll('.tracks .row').forEach((row, i) => row.style.setProperty('--i', Math.min(i, 12)));
+  number();
+  requestAnimationFrame(number);
+  void el.offsetWidth;
+  el.classList.add('opening');
+  // Rows a long list draws later, as it scrolls, simply appear.
+  setTimeout(() => el.classList.remove('opening'), 900);
+}
+
+/** Whether two answers for a page would look the same on screen (a saved copy also carries its pin and tags). */
+function looksSame(a, b) {
+  const seen = (d) => JSON.stringify([d.title, d.artist, d.art, d.description || '', d.year,
+    (d.tracks || []).map((t) => [t.id, t.title, t.artist, t.album, t.duration, t.art, t.playable, t.explicit])]);
+  return seen(a) === seen(b);
+}
+
+/**
+ * A page that has to ask a service first. With `cacheKey` (the page's address) a copy kept from an
+ * earlier visit, or a playlist saved in Tint, shows at once; the service's answer then replaces it
+ * quietly if anything changed, and is kept for next time.
+ */
+function asyncView(fetcher, build, { needsApple = true, cacheKey = null } = {}) {
   const el = h('section', { class: 'page' }, loading());
   let parts = [];
   let alive = true;
+  let settledAt = 0; // when the page's opening animation will have finished
 
-  async function run() {
-    fill(el, loading());
+  function show(data, animate) {
+    parts.forEach((p) => p.destroy());
+    calmDraw = !animate;
     try {
-      const data = await fetcher();
-      if (!alive) return;
       const built = build(data);
       parts = built.parts || [];
       fill(el, ...built.nodes);
-      replay(el, 'arrive');
+      // A quiet swap draws its rows now rather than a frame later, so the list never shows empty.
+      if (!animate) parts.forEach((p) => p.refresh());
+    } finally {
+      calmDraw = false;
+    }
+    if (!animate) return;
+    settledAt = performance.now() + 900;
+    if (el.querySelector('.detail-head')) opening(el);
+    else replay(el, 'arrive');
+  }
+
+  async function run() {
+    let early = null;
+    if (cacheKey) {
+      const saved = collection.find(cacheKey);
+      early = await pagecache.read(cacheKey) || (saved?.tracks?.length ? { ...saved, description: '' } : null);
+      if (!alive) return;
+    }
+    if (early) show(early, true);
+    else fill(el, loading());
+    try {
+      const data = await fetcher();
+      if (!alive) return;
+      if (cacheKey && !data.fromCopy) pagecache.keep(cacheKey, data);
+      if (!early) { show(data, true); return; }
+      if (looksSame(early, data)) return;
+      // Something changed: swapped in once the page has finished opening, and without opening again.
+      const wait = settledAt - performance.now();
+      if (wait > 0) await new Promise((done) => setTimeout(done, wait));
+      if (!alive) return;
+      el.classList.remove('opening', 'arrive');
+      show(data, false);
     } catch (e) {
-      if (alive) fill(el, !needsApple || apple.instance() ? failure(e, run) : connectPrompt('This comes from Apple Music'));
+      // With a copy already on screen, it stays; the service is asked again next visit.
+      if (alive && !early) fill(el, !needsApple || apple.instance() ? failure(e, run) : connectPrompt('This comes from Apple Music'));
     }
   }
 
@@ -562,25 +889,28 @@ function appleAlbumView({ scroller, params }) {
         ...parts.map((p) => p.el),
       ],
     };
-  });
+  }, { cacheKey: `#/album/a/${encodeURIComponent(params[0])}` });
 }
 
 function applePlaylistView({ scroller, params }) {
-  return asyncView(() => apple.playlist(params[0]), (playlist) => {
+  const href = `#/playlist/a/${encodeURIComponent(params[0])}`;
+  return asyncView(() => liveOrSaved(href, apple.playlist(params[0])), (playlist) => {
     const list = trackList(scroller, playlist.tracks);
     const length = playlist.tracks.reduce((sum, t) => sum + (t.duration || 0), 0);
     return {
       parts: [list],
       nodes: [
         detailHead({
-          art: playlist.art || playlist.tracks[0]?.art, kind: 'Playlist', title: playlist.title, byline: playlist.artist,
+          art: playlist.art || playlist.tracks[0]?.art, kind: playlist.fromCopy ? 'Playlist (the copy saved in Tint)' : 'Playlist',
+          title: playlist.title, byline: playlist.artist,
           facts: [plural(playlist.tracks.length, 'song'), length ? fmtLength(length) : null].filter(Boolean).join(', '),
           description: playlist.description, tracks: playlist.tracks,
+          saveAs: { id: params[0], source: 'apple', ...playlist, href },
         }),
         playlist.tracks.length ? list.el : emptyState('This playlist is empty'),
       ],
     };
-  });
+  }, { cacheKey: href });
 }
 
 function youtubeAlbumView({ scroller, params }) {
@@ -597,21 +927,59 @@ function youtubeAlbumView({ scroller, params }) {
         ...parts.map((p) => p.el),
       ],
     };
-  }, { needsApple: false });
+  }, { needsApple: false, cacheKey: `#/album/y/${encodeURIComponent(params[0])}` });
 }
 
 function youtubePlaylistView({ scroller, params }) {
+  const href = `#/playlist/y/${encodeURIComponent(params[0])}`;
+  // A pasted playlist link lands here even with YouTube Music switched off.
+  if (!youtube.isReady()) {
+    return { el: h('section', { class: 'page' }, pageHead('Playlist'),
+      emptyState('YouTube Music is off', 'Switch on YouTube Music in Settings to open and play playlists from YouTube.', linkButton('Open settings', '#/settings', 'primary'))) };
+  }
   youtube.warm();
-  return asyncView(() => youtube.playlist(params[0]), (playlist) => {
+  return asyncView(() => liveOrSaved(href, youtube.playlist(params[0])), (playlist) => {
     const list = trackList(scroller, playlist.tracks);
     const length = playlist.tracks.reduce((sum, t) => sum + (t.duration || 0), 0);
     return {
       parts: [list],
       nodes: [
         detailHead({
-          art: playlist.art, kind: 'Playlist on YouTube Music', title: playlist.title, byline: playlist.artist,
+          art: playlist.art, kind: playlist.fromCopy ? 'Playlist (the copy saved in Tint)' : 'Playlist on YouTube Music',
+          title: playlist.title, byline: playlist.artist,
           facts: [plural(playlist.tracks.length, 'song'), length ? fmtLength(length) : null].filter(Boolean).join(', '),
           description: playlist.description, tracks: playlist.tracks,
+          saveAs: { id: params[0], source: 'youtube', ...playlist, href },
+        }),
+        playlist.tracks.length ? list.el : emptyState('This playlist is empty'),
+      ],
+    };
+  }, { needsApple: false, cacheKey: href });
+}
+
+const SERVICE_NAMES = { apple: 'Apple Music', youtube: 'YouTube Music' };
+
+/** A playlist made in Tint itself (from a Spotify link, say): its songs are the copy kept with it. */
+function tintPlaylistView({ scroller, params }) {
+  const href = `#/playlist/t/${encodeURIComponent(params[0])}`;
+  return asyncView(async () => {
+    const saved = collection.find(href);
+    if (!saved) throw new Error('This playlist is no longer saved in Tint.');
+    return saved;
+  }, (playlist) => {
+    const list = trackList(scroller, playlist.tracks);
+    const length = playlist.tracks.reduce((sum, t) => sum + (t.duration || 0), 0);
+    const from = playlist.from?.kind === 'spotify'
+      ? `Made from a Spotify ${playlist.from.what === 'album' ? 'album' : 'playlist'}, with its songs found on ${SERVICE_NAMES[playlist.from.service] || 'Apple Music and YouTube Music'}.`
+      : '';
+    return {
+      parts: [list],
+      nodes: [
+        detailHead({
+          art: playlist.art || playlist.tracks[0]?.art, kind: 'Playlist in Tint',
+          title: playlist.title, byline: playlist.artist,
+          facts: [plural(playlist.tracks.length, 'song'), length ? fmtLength(length) : null].filter(Boolean).join(', '),
+          description: from, tracks: playlist.tracks, saveAs: playlist,
         }),
         playlist.tracks.length ? list.el : emptyState('This playlist is empty'),
       ],
@@ -692,8 +1060,33 @@ function searchView({ scroller, params }) {
   // A pasted Spotify link: the same songs found on Apple Music and YouTube Music.
   const spotted = linked ? null : spotify.linkIn(term);
   let fromSpotify = spotted ? 'loading' : null; // then null (nothing there), an Error, or what spotifyFound() takes
+  let matchRun = 0; // a new search for a list's songs makes the one before stop
   let query = linked || spotted ? '' : term;
   let alive = true;
+  // When each section of results first appeared, so it rises in once and isn't replayed when
+  // later results (another service answering) redraw the page.
+  const arrived = new Map();
+  const REVEAL_MS = 1200;
+
+  function reveal() {
+    const now = performance.now();
+    for (const node of el.children) {
+      const key = node.matches('.shelf, .empty') && (node.querySelector('h2')?.textContent || node.className);
+      if (!key) continue;
+      if (!arrived.has(key)) arrived.set(key, now);
+      const past = now - arrived.get(key);
+      if (past > REVEAL_MS) continue;
+      // A section redrawn mid-rise carries on from where it was.
+      node.style.setProperty('--past', `${Math.round(past)}ms`);
+      node.classList.add('reveal');
+      const number = () => node.querySelectorAll('.row, .card').forEach((item, i) => item.style.setProperty('--i', Math.min(i, 14)));
+      number();
+      // Lists and grids draw what's on screen a frame later.
+      requestAnimationFrame(number);
+      // Once risen, rows a long list draws later as it scrolls simply appear.
+      setTimeout(() => node.classList.remove('reveal'), REVEAL_MS - past);
+    }
+  }
 
   function draw() {
     parts.forEach((p) => p.destroy());
@@ -770,6 +1163,7 @@ function searchView({ scroller, params }) {
         : 'Only the music on this PC was searched. Set up Apple Music or YouTube Music in Settings to search their catalogs too.'));
     }
     fill(el, ...nodes);
+    reveal();
   }
 
   function lookUp() {
@@ -808,13 +1202,25 @@ function searchView({ scroller, params }) {
         settle('apple', spotify.onApple(first));
         settle('tube', spotify.onYouTube(first));
       } else {
-        fromSpotify = { found, matched: null, done: 0 };
+        fromSpotify = { found, link: spotted, matched: null, done: 0, prefer: spotify.firstChoice() };
         // An album may well be on Apple Music or YouTube Music whole, so it is searched for too.
         if (found.kind === 'album') query = `${found.title} ${found.artist.split(',')[0]}`.trim();
-        spotify.matchAll(found.songs, (done) => {
-          fromSpotify.done = done;
-          if (alive && done % 5 === 0) draw();
-        }).then((matched) => { fromSpotify.matched = matched; if (alive) draw(); });
+        const match = (prefer) => {
+          const run = ++matchRun;
+          const state = fromSpotify;
+          Object.assign(state, { prefer, matched: null, done: 0 });
+          spotify.matchAll(found.songs, (done) => {
+            if (run !== matchRun) return;
+            state.done = done;
+            if (alive && done % 5 === 0) draw();
+          }, prefer, () => !alive || run !== matchRun).then((matched) => {
+            if (run !== matchRun) return;
+            state.matched = matched;
+            if (alive) draw();
+          });
+        };
+        fromSpotify.rematch = (prefer) => { match(prefer); draw(); };
+        match(fromSpotify.prefer);
       }
     }, (e) => { fromSpotify = e instanceof Error ? e : new Error(String(e)); })
       .then(() => { if (!alive) return; lookUp(); draw(); });
@@ -845,18 +1251,37 @@ function spotifyFound(state, songList) {
 
   const what = found.kind === 'album' ? 'album' : 'playlist';
   const total = found.songs.length;
+  const other = state.prefer === 'youtube' ? 'apple' : 'youtube';
+  // With both services ready, the songs can be looked for on either one first.
+  const chooser = apple.instance() && youtube.isReady()
+    ? [h('span', { class: 'quiet' }, 'Look on'),
+      segmented('Look for the songs on', Object.entries(SERVICE_NAMES), state.prefer, (id) => { if (id !== state.prefer) state.rematch(id); })]
+    : null;
   if (!state.matched) {
-    nodes.push(loading(`Finding the ${what}'s songs… ${state.done} of ${total}`));
+    if (chooser) nodes.push(h('div', { class: 'spotify-tools' }, chooser));
+    nodes.push(loading(`Finding the ${what}'s songs on ${SERVICE_NAMES[state.prefer]}… ${state.done} of ${total}`));
     return nodes;
   }
   const songs = state.matched.filter(Boolean);
   const missing = found.songs.filter((_, i) => !state.matched[i]);
   const title = `${found.title}${found.artist ? ` · ${found.artist}` : ''}`;
   if (songs.length) {
+    // Kept as a playlist in Tint, the songs found stay together without searching again.
+    const href = convertedHref(state.link);
+    const saved = collection.find(href);
+    const keep = () => { saveConverted(state, songs, href); location.hash = href; };
+    nodes.push(h('div', { class: 'spotify-tools' },
+      saved
+        ? [linkButton('Open the saved playlist', href, 'primary'), button('Replace its songs with these', keep)]
+        : h('button', { class: 'btn primary', onclick: keep }, h('span', { class: 'btn-icon', icon: 'bookmark' }), 'Save as a playlist in Tint'),
+      chooser && h('span', { class: 'spotify-gap' }),
+      chooser));
     nodes.push(songList(title, songs));
+    const elsewhere = songs.filter((song) => song.source !== state.prefer).length;
     // Spotify's player lists a playlist's first 100 songs only.
-    const note = [songs.length < total ? `${songs.length} of ${total} songs found.` : `All ${total} songs found.`,
-      what === 'playlist' && total === 100 ? 'Only the first 100 songs of a playlist can be read from Spotify.' : ''].filter(Boolean).join(' ');
+    const note = [songs.length < total ? `${songs.length} of ${total} songs found` : `All ${total} songs found`,
+      elsewhere ? `: ${songs.length - elsewhere} on ${SERVICE_NAMES[state.prefer]}, and ${elsewhere} on ${SERVICE_NAMES[other]} where ${SERVICE_NAMES[state.prefer]} didn't have them.` : ` on ${SERVICE_NAMES[state.prefer]}.`,
+      what === 'playlist' && total === 100 ? ' Only the first 100 songs of a playlist can be read from Spotify.' : ''].join('');
     nodes.push(h('p', { class: 'quiet' }, note));
   } else {
     nodes.push(emptyState('Not found', `None of the ${what}'s songs were found.`));
@@ -865,6 +1290,127 @@ function spotifyFound(state, songList) {
     nodes.push(h('p', { class: 'quiet' }, 'Not found: ' + missing.map((song) => `${song.title} (${song.artist})`).join(', ') + '.'));
   }
   return nodes;
+}
+
+/** Where a Spotify list lives once it is saved in Tint. The same link always lands on the same playlist. */
+const convertedHref = (link) => `#/playlist/t/spotify-${link.kind}-${link.id}`;
+
+function saveConverted(state, songs, href) {
+  const { found, link } = state;
+  collection.save({
+    id: `spotify-${link.kind}-${link.id}`, source: 'tint', href,
+    title: found.title.trim(), artist: found.artist.trim(),
+    art: found.art ? { url: found.art } : songs[0]?.art || null,
+    tracks: songs,
+    from: { kind: 'spotify', what: link.kind, url: `https://open.spotify.com/${link.kind}/${link.id}`, service: state.prefer, at: Date.now() },
+  });
+  toast(`Saved "${found.title.trim()}" in Tint`);
+}
+
+// ---- Welcome ------------------------------------------------------------------------------------
+
+/** Opens the file picker for a backup and takes it in. */
+function pickBackup(done) {
+  const input = h('input', { type: 'file', accept: '.json,application/json' });
+  input.addEventListener('change', async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    try {
+      const { added, songs } = await backup.importFrom(file);
+      toast(`Backup imported: ${plural(added, 'new playlist')}${songs ? `, ${plural(songs, 'song')} played lately` : ''}.`, { ms: 5000 });
+      done?.();
+    } catch (e) {
+      toast(e?.message || "That backup couldn't be read.", { ms: 6000 });
+    }
+  });
+  input.click();
+}
+
+/** The first page of a new install: where the music comes from, and where it is on this PC. */
+function welcomeView() {
+  const el = h('section', { class: 'page welcome' });
+  let choice = ['apple', 'youtube', 'pc'].includes(prefs.mainService) ? prefs.mainService : null;
+  let busy = false;
+  const start = h('button', { class: 'btn primary', onclick: () => finish() }, 'Start listening');
+  const services = [
+    ['apple', 'Apple Music', 'Your Apple Music library, and the whole catalog with a subscription.'],
+    ['youtube', 'YouTube Music', 'Your YouTube Music library and the whole catalog.'],
+    ['pc', 'Only music on this PC', 'The music files in your folders. Either service can be set up later.'],
+  ];
+  const ready = () => { start.disabled = !choice || busy; start.title = choice ? '' : 'Choose where you listen first'; };
+
+  async function finish() {
+    if (!choice || busy) return;
+    busy = true;
+    ready();
+    try {
+      await savePrefs({ mainService: choice, welcomed: true, ...(choice === 'youtube' ? { youtube: true } : {}) });
+    } catch {
+      busy = false;
+      ready();
+      toast("That couldn't be saved. Try again.");
+      return;
+    }
+    // A service still to be set up is taken to its place in Settings.
+    if (choice === 'apple' && !apple.isSignedIn()) {
+      location.replace('#/settings/apple');
+      toast('Set up Apple Music here, then sign in.', { ms: 5000 });
+    } else if (choice === 'youtube' && !youtube.isSignedIn()) {
+      location.replace('#/settings/youtube');
+      toast('Sign in to Google here to play from YouTube Music.', { ms: 5000 });
+    } else {
+      location.replace('#/home');
+    }
+  }
+
+  function draw() {
+    ready();
+    fill(el,
+      pageHead('Welcome to Tint', 'Two questions, and then the music.'),
+      h('section', { class: 'welcome-step' },
+        h('h2', {}, 'Where do you listen most?'),
+        h('p', { class: 'quiet' }, 'Songs from links to other services, like Spotify, are looked for there first. This can be changed in Settings.'),
+        h('div', { class: 'welcome-choices', role: 'radiogroup', 'aria-label': 'Where do you listen most?' },
+          services.map(([id, name, text]) => h('label', { class: 'welcome-choice' },
+            h('input', { type: 'radio', name: 'main-service', value: id, checked: choice === id, onchange: () => { choice = id; ready(); } }),
+            h('span', { class: 'welcome-choice-icon', icon: id }),
+            h('span', { class: 'welcome-choice-text' }, h('strong', {}, name), h('span', { class: 'quiet' }, text)))))),
+      h('section', { class: 'welcome-step' },
+        h('h2', {}, 'Music on this PC'),
+        h('p', { class: 'quiet' }, prefs.folders.length
+          ? 'Tint found these folders. Add any other folder with music in it, or go on without.'
+          : 'If you keep music files on this PC, add the folder they are in. Or go on without.'),
+        prefs.folders.length ? h('ul', { class: 'folders' },
+          prefs.folders.map((folder) => h('li', {},
+            h('span', { class: 'folder-icon', icon: 'folder' }),
+            h('span', { class: 'folder-path', title: folder }, folder),
+            h('button', {
+              class: 'text-btn', 'aria-label': `Remove ${folder}`,
+              onclick: () => savePrefs({ folders: prefs.folders.filter((f) => f !== folder) }),
+            }, 'Remove')))) : null,
+        h('div', { class: 'panel-actions' },
+          button(prefs.folders.length ? 'Add another folder' : 'Add a folder', async () => {
+            const { path } = await post('/api/pick-folder');
+            if (path) await savePrefs({ folders: [...prefs.folders, path] });
+          }))),
+      h('aside', { class: 'welcome-note' },
+        h('span', { class: 'welcome-note-icon', icon: 'pc' }),
+        h('div', {},
+          h('strong', {}, 'Everything stays on this PC'),
+          h('p', {},
+            'Saved playlists, tags, the songs you play and these choices are kept here, not in an account. ',
+            'To keep them when you change PCs or reinstall, export a backup from Settings (under Saved data) and import it there.'))),
+      h('div', { class: 'welcome-actions' },
+        start,
+        h('button', { class: 'text-btn', onclick: () => pickBackup(() => location.replace('#/home')) }, 'Import a backup instead')));
+  }
+
+  draw();
+  return {
+    el,
+    // Folders added or removed show at once; the choice made so far is kept.
+    refresh: (why) => { if (why === 'prefs' && !busy) draw(); },
+  };
 }
 
 // ---- Lyrics -------------------------------------------------------------------------------------
@@ -890,6 +1436,14 @@ function lyricsView({ scroller }) {
   let lit = -1;
   let heldUntil = 0;
   let alive = true;
+  // Choosing lines to copy: clicking a line picks it instead of jumping the song there.
+  let picking = false;
+  const picked = new Set();
+  let anchor = -1;
+  let lineEls = [];   // every line on screen, timed or not, in order
+  let lineTexts = []; // what each says as shown (romaji, and its translation, when those are on)
+  const pickBar = h('div', { class: 'pick-bar', role: 'toolbar', 'aria-label': 'Copy lines' });
+  let pickButton = null;
   // The player reports its position a few times a second; between reports it is worked out.
   let clock = { time: player.state.time, at: performance.now() };
 
@@ -899,6 +1453,8 @@ function lyricsView({ scroller }) {
     track = player.current();
     result = track ? 'loading' : null;
     translation = null;
+    picking = false;
+    picked.clear();
     draw();
     if (!track) return;
     const mine = track;
@@ -976,23 +1532,110 @@ function lyricsView({ scroller }) {
       translate();
       draw();
     });
-    const head = pageHead('Lyrics', summary, romajiSwitch, languages);
+    const copyLines = h('button', {
+      class: 'btn', title: 'Choose lines to copy', 'aria-pressed': String(picking),
+      onclick: () => (picking ? stopPicking() : startPicking()),
+    }, h('span', { class: 'btn-icon', icon: 'copy' }), 'Copy lines');
+    pickButton = copyLines;
+    const head = pageHead('Lyrics', summary, copyLines, romajiSwitch, languages);
     const working = shown === texts && romajiWanted() && result.romajiPending
       ? h('p', { class: 'quiet lyrics-working' }, 'Working out the romaji… The first time, this downloads a Japanese dictionary (17 MB).')
       : translation === 'working' ? h('p', { class: 'quiet lyrics-working' }, 'Translating…') : null;
     const translated = Array.isArray(translation) && translation.some((line, i) => line && line !== texts[i]) ? ' Translated by Google.' : '';
 
+    lineTexts = shown.map((line, i) => {
+      const under = Array.isArray(translation) && translation[i] && translation[i] !== texts[i] ? translation[i] : '';
+      return [line, under].filter(Boolean).join('\n');
+    });
+    const lineEvents = (i) => ({
+      oncontextmenu: (e) => {
+        e.preventDefault();
+        showMenu(e.clientX, e.clientY, [
+          lineTexts[i] && { label: 'Copy this line', run: () => copyText(lineTexts[i], 'Line copied') },
+          { label: 'Choose lines to copy…', run: () => startPicking(i) },
+          { label: 'Copy all the lyrics', run: () => copyText(lineTexts.join('\n'), 'Lyrics copied') },
+        ]);
+      },
+    });
+
     if (!result.lines) {
-      return fill(el, head, working,
-        h('div', { class: 'lyrics is-plain' }, shown.map((line, i) => [h('p', {}, line || '\u00a0'), translationUnder(i, texts[i], 'p')])),
-        h('p', { class: 'quiet lyrics-source' }, `These lyrics aren't timed to the song. From ${result.source}.${translated}`));
+      rows = [];
+      lineEls = shown.map((line, i) => h('p', {
+        class: 'lyric-plain', ...lineEvents(i),
+        onclick: (e) => { if (picking) pick(i, e.shiftKey); },
+      }, line || '\u00a0', translationUnder(i, texts[i])));
+      fill(el, head, working,
+        h('div', { class: 'lyrics is-plain' }, lineEls),
+        h('p', { class: 'quiet lyrics-source' }, `These lyrics aren't timed to the song. From ${result.source}.${translated}`),
+        pickBar);
+      markPicked();
+      return;
     }
     rows = result.lines.map((line, i) => h('button', {
-      class: 'lyric' + (line.text ? '' : ' is-gap'),
-      onclick: () => { heldUntil = 0; player.seek(line.time); if (!player.state.playing) player.toggle(); },
+      class: 'lyric' + (line.text ? '' : ' is-gap'), ...lineEvents(i),
+      onclick: (e) => {
+        if (picking) { pick(i, e.shiftKey); return; }
+        heldUntil = 0; player.seek(line.time); if (!player.state.playing) player.toggle();
+      },
     }, shown[i] || '♪', translationUnder(i, line.text)));
-    fill(el, head, working, h('div', { class: 'lyrics' }, rows), h('p', { class: 'quiet lyrics-source' }, `Lyrics from ${result.source}${translated && '.' + translated}`));
+    lineEls = rows;
+    fill(el, head, working, h('div', { class: 'lyrics' }, rows), h('p', { class: 'quiet lyrics-source' }, `Lyrics from ${result.source}${translated && '.' + translated}`), pickBar);
+    markPicked();
     follow(true);
+  }
+
+  // ---- choosing lines to copy ----
+
+  function startPicking(first = null) {
+    picking = true;
+    picked.clear();
+    anchor = -1;
+    if (first != null && lineTexts[first]) { picked.add(first); anchor = first; }
+    markPicked();
+  }
+
+  function stopPicking() {
+    picking = false;
+    picked.clear();
+    anchor = -1;
+    markPicked();
+  }
+
+  /** Picks a line, or (holding Shift) every line from the last one picked to this one. */
+  function pick(i, run) {
+    if (!lineTexts[i]) return; // the pauses between verses have nothing to copy
+    if (run && anchor >= 0) {
+      for (let k = Math.min(anchor, i); k <= Math.max(anchor, i); k++) if (lineTexts[k]) picked.add(k);
+    } else if (picked.has(i)) {
+      picked.delete(i);
+    } else {
+      picked.add(i);
+    }
+    anchor = i;
+    markPicked();
+  }
+
+  async function copyPicked() {
+    const text = [...picked].sort((a, b) => a - b).map((i) => lineTexts[i]).join('\n');
+    if (await copyText(text, picked.size === 1 ? 'Line copied' : `${picked.size} lines copied`)) stopPicking();
+  }
+
+  function markPicked() {
+    el.classList.toggle('is-picking', picking);
+    pickButton?.setAttribute('aria-pressed', String(picking));
+    lineEls.forEach((line, i) => {
+      line.classList.toggle('is-picked', picked.has(i));
+      if (picking) line.setAttribute('aria-pressed', String(picked.has(i)));
+      else line.removeAttribute('aria-pressed');
+    });
+    pickBar.classList.toggle('is-up', picking);
+    fill(pickBar,
+      h('span', { class: 'pick-count' }, picked.size ? `${plural(picked.size, 'line')} chosen` : 'Click lines to choose them. Shift-click picks a run.'),
+      h('span', { class: 'pick-actions' },
+        h('button', { class: 'text-btn', onclick: () => { lineTexts.forEach((t, i) => { if (t) picked.add(i); }); markPicked(); } }, 'All'),
+        h('button', { class: 'text-btn', onclick: stopPicking }, 'Cancel'),
+        h('button', { class: 'btn primary small', disabled: !picked.size, onclick: copyPicked },
+          h('span', { class: 'btn-icon', icon: 'copy' }), 'Copy')));
   }
 
   /** Lights the line being sung and keeps it in view. */
@@ -1005,7 +1648,8 @@ function lyricsView({ scroller }) {
     if (line === lit && !jump) return;
     rows.forEach((row, i) => { row.classList.toggle('is-past', i < line); row.classList.toggle('is-now', i === line); });
     lit = line;
-    if (performance.now() < heldUntil) return;
+    // Choosing lines to copy holds the page still.
+    if (picking || performance.now() < heldUntil) return;
     const row = rows[Math.max(line, 0)];
     const box = scroller.getBoundingClientRect(), at = row.getBoundingClientRect();
     // The line being sung sits a little above the middle, with what comes next below it.
@@ -1019,6 +1663,8 @@ function lyricsView({ scroller }) {
   });
 
   const hold = () => { heldUntil = performance.now() + LYRICS_HOLD_MS; };
+  const onKey = (e) => { if (e.key === 'Escape' && picking) stopPicking(); };
+  document.addEventListener('keydown', onKey);
   scroller.addEventListener('wheel', hold, { passive: true });
   scroller.addEventListener('touchmove', hold, { passive: true });
 
@@ -1042,13 +1688,14 @@ function lyricsView({ scroller }) {
       off();
       scroller.removeEventListener('wheel', hold);
       scroller.removeEventListener('touchmove', hold);
+      document.removeEventListener('keydown', onKey);
     },
   };
 }
 
 // ---- Settings -----------------------------------------------------------------------------------
 
-function settingsView() {
+function settingsView({ params } = {}) {
   const el = h('section', { class: 'page settings' });
   let busy = false;
 
@@ -1421,6 +2068,14 @@ function settingsView() {
       h('span', { class: 'quiet field-hint' }, hint));
   }
 
+  function mainSection() {
+    return h('section', { class: 'panel' },
+      h('h2', {}, 'Main service'),
+      h('p', { class: 'quiet' }, "Where you listen most. Songs from a Spotify link are looked for there first, and on the other service when it doesn't have them."),
+      segmented('Main service', [['apple', 'Apple Music'], ['youtube', 'YouTube Music'], ['pc', 'Only this PC']], prefs.mainService || 'pc',
+        (v) => savePrefs({ mainService: v })));
+  }
+
   function playbackSection() {
     return h('section', { class: 'panel' },
       h('h2', {}, 'Playback'),
@@ -1436,6 +2091,57 @@ function settingsView() {
         h('span', {},
           h('span', {}, 'Keep the window dark'),
           h('span', { class: 'quiet' }, 'Normally a light cover gives you a light window. Turn this on to stay dark for every cover.'))));
+  }
+
+  // ---- what Tint keeps on this PC ----
+  let cacheSize = null;
+  const sizeText = (bytes) => (bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`);
+  const loadCacheSize = () => pagecache.size().then((s) => { cacheSize = s; draw(); }, () => {});
+  let exported = null; // where the last backup went
+  let exporting = false;
+
+  function cacheSection() {
+    const summary = !cacheSize ? 'Counting…'
+      : cacheSize.count ? `${plural(cacheSize.count, 'page')} kept, ${sizeText(cacheSize.bytes)}.`
+        : 'Nothing kept yet.';
+    const keep = [[7, '1 week'], [14, '2 weeks'], [30, '1 month'], [90, '3 months'], [365, '1 year'], [0, 'Never']];
+    return h('section', { class: 'panel' },
+      h('h2', {}, 'Saved data'),
+      h('p', {},
+        'Everything Tint keeps stays on this PC: saved playlists and tags, the songs played lately, and these settings. ',
+        "None of it is in an account, so to move it to another PC or keep it through a reinstall, export a backup and import it there. Sign-ins aren't part of it."),
+      h('div', { class: 'panel-actions' },
+        h('button', {
+          class: 'btn', disabled: exporting,
+          onclick: async () => {
+            exporting = true;
+            draw();
+            try {
+              exported = await backup.exportAll();
+              toast('Backup saved in Downloads');
+            } catch (e) {
+              toast(e?.message || "The backup couldn't be saved.", { ms: 6000 });
+            } finally {
+              exporting = false;
+              draw();
+            }
+          },
+        }, h('span', { class: 'btn-icon', icon: 'download' }), exporting ? 'Exporting…' : 'Export a backup'),
+        button('Import a backup', () => pickBackup(draw)),
+        exported && h('button', { class: 'text-btn', title: exported, onclick: () => backup.show(exported) }, 'Show the backup')),
+      h('p', { class: 'quiet cache-about' },
+        'Playlists and albums you open are also kept, so they open at once next time while Tint checks for changes. ' + summary),
+      h('div', { class: 'field cache-keep' },
+        h('span', { class: 'field-label' }, 'Forget pages not opened or played for'),
+        select('Forget pages not opened or played for', keep.map(([days, text]) => [String(days), text]), String(prefs.cacheKeepDays ?? 30),
+          async (v) => { await savePrefs({ cacheKeepDays: Number(v) }); loadCacheSize(); }),
+        h('span', { class: 'quiet field-hint' }, 'Playlists saved in Tint always keep their songs; only the extra copies are forgotten.')),
+      h('div', { class: 'panel-actions' },
+        button('Clear kept pages', async () => {
+          const { gone } = await pagecache.clear();
+          toast(gone ? `Cleared ${plural(gone, 'page')}` : 'There was nothing to clear');
+          loadCacheSize();
+        })));
   }
 
   let checking = false;
@@ -1463,11 +2169,18 @@ function settingsView() {
   function draw() {
     // Typing shouldn't be interrupted by a background refresh.
     if (el.contains(document.activeElement) && /INPUT|TEXTAREA/.test(document.activeElement.tagName)) return;
-    fill(el, pageHead('Settings'), foldersSection(), appleSection(), youtubeSection(), discordSection(), playbackSection(), lookSection(), updateSection(),
+    fill(el, pageHead('Settings'), mainSection(), foldersSection(), appleSection(), youtubeSection(), discordSection(), playbackSection(), lookSection(), cacheSection(), updateSection(),
       h('p', { class: 'quiet about' }, `Tint${update.getStatus() ? ' ' + update.getStatus().current : ''}. Space plays and pauses, Ctrl+Right and Ctrl+Left change songs, Ctrl+F searches.`));
   }
 
   draw();
+  loadCacheSize();
+  // Opened at one section (#/settings/apple, say), as the welcome does.
+  const wanted = { apple: 'Apple Music', youtube: 'YouTube Music', data: 'Saved data' }[params?.[0]];
+  if (wanted) {
+    requestAnimationFrame(() => [...el.querySelectorAll('.panel > h2')].find((title) => title.textContent === wanted)
+      ?.parentElement.scrollIntoView({ block: 'start' }));
+  }
   return {
     el,
     refresh: (why) => { if (why !== 'track') draw(); },
@@ -1481,7 +2194,8 @@ export const routes = {
   albums: albumsView,
   songs: songsView,
   playlists: playlistsView,
-  home: homeView,
+  home: startView,
+  listen: homeView,
   search: searchView,
   settings: settingsView,
   lyrics: lyricsView,
@@ -1492,5 +2206,7 @@ export const routes = {
   'artist/a': artistView('a'),
   'album/y': youtubeAlbumView,
   'playlist/y': youtubePlaylistView,
+  'playlist/t': tintPlaylistView,
+  welcome: welcomeView,
   'artist/y': artistView('y'),
 };

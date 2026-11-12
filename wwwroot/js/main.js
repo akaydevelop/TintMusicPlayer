@@ -7,6 +7,9 @@ import * as youtube from './youtube.js';
 import * as library from './library.js';
 import * as prefs from './prefs.js';
 import * as update from './update.js';
+import * as collection from './collection.js';
+import * as backup from './backup.js';
+import * as played from './history.js';
 import { initDeck, themeNow } from './deck.js';
 import { initPresence } from './presence.js';
 import { initSystem } from './system.js';
@@ -16,7 +19,7 @@ import { post } from './api.js';
 const scroller = $('scroller');
 const viewHost = $('view');
 const searchBox = $('q');
-const HOME = '#/albums';
+const HOME = '#/home';
 
 let view = null;
 let viewHash = null;
@@ -63,9 +66,17 @@ function show() {
     if (tab.getAttribute('href') === '#/' + route.name) tab.setAttribute('aria-current', 'page');
     else tab.removeAttribute('aria-current');
   }
+  moveInk();
   $('b-settings').classList.toggle('is-here', route.name === 'settings');
   $('b-lyrics').classList.toggle('is-here', route.name === 'lyrics');
+  // The welcome is a page of its own: nothing to search or browse to until it is answered.
+  document.body.classList.toggle('is-welcoming', route.name === 'welcome');
   $('b-back').disabled = !(window.navigation?.canGoBack ?? history.length > 1);
+  // Home is where everything starts, so there is nothing to go back to from it.
+  const atHome = route.name === 'home';
+  $('b-back').classList.toggle('is-gone', atHome);
+  $('b-back').tabIndex = atHome ? -1 : 0;
+  $('b-back').toggleAttribute('aria-hidden', atHome);
 
   if (route.name === 'search') {
     if (document.activeElement !== searchBox) searchBox.value = route.params[0] || '';
@@ -89,6 +100,7 @@ function refresh(why) {
 
 function initBar() {
   $('b-back').innerHTML = icon('back');
+  $('tab-start').innerHTML = icon('home');
   $('b-mini').innerHTML = icon('mini');
   $('b-settings').innerHTML = icon('settings');
   $('search-icon').innerHTML = icon('search');
@@ -97,6 +109,14 @@ function initBar() {
   $('b-mini').addEventListener('click', () => post('/api/mini', { on: true }).catch(() => {}));
 
   const search = debounce(() => {
+    // A pasted playlist link opens the playlist, where it can be played and saved.
+    const listed = youtube.playlistIn(searchBox.value);
+    if (listed) {
+      searchBox.value = '';
+      searchBox.blur();
+      location.hash = '#/playlist/y/' + encodeURIComponent(listed);
+      return;
+    }
     const target = '#/search/' + encodeURIComponent(searchBox.value.trim());
     // Typing refines one search; it shouldn't leave a trail of history entries.
     if (location.hash.startsWith('#/search')) location.replace(target);
@@ -111,7 +131,30 @@ function initBar() {
 function drawAppleTabs() {
   // "Listen now" only makes sense once Apple Music is set up.
   $('tab-home').hidden = apple.getStatus() !== 'ready';
+  moveInk();
 }
+
+/**
+ * Glides the underline to the open page's tab, as wide as the tab's words. On a page without a tab
+ * (an album, settings) it fades away, and fades back in place rather than sliding from where it was.
+ */
+function moveInk() {
+  const ink = $('tab-ink');
+  const tab = document.querySelector('#tabs a[aria-current="page"]');
+  if (!tab || tab.hidden) { ink.classList.remove('is-on'); return; }
+  const wasOn = ink.classList.contains('is-on');
+  if (!wasOn) ink.classList.add('no-slide');
+  const pad = parseFloat(getComputedStyle(tab).paddingLeft) || 0;
+  ink.style.width = `${tab.offsetWidth - pad * 2}px`;
+  ink.style.translate = `${tab.offsetLeft + pad}px 0`;
+  if (!wasOn) {
+    void ink.offsetWidth; // takes the new place before transitions return
+    ink.classList.remove('no-slide');
+  }
+  ink.classList.add('is-on');
+}
+window.addEventListener('resize', () => moveInk());
+document.fonts?.ready.then(() => moveInk());
 
 // ---- keyboard -----------------------------------------------------------------------------------
 
@@ -157,9 +200,14 @@ async function boot() {
   apple.onChange(() => { drawAppleTabs(); refresh('apple'); });
   youtube.onChange(() => refresh('youtube'));
   update.onChange(() => refresh('update'));
+  // Before the page hears of a new song, so Home already lists it.
+  played.init();
+  collection.onChange(() => refresh('collection'));
   player.on((kind) => { if (kind === 'track') refresh('track'); });
 
-  await Promise.all([library.start(), youtube.init()]);
+  await Promise.all([library.start(), youtube.init(), collection.load()]);
+  // A first start opens on the welcome, which asks where the music comes from.
+  if (!prefs.prefs.welcomed) history.replaceState(null, '', '#/welcome');
   show();
 
   // Apple's player loads after the local library is already on screen.
@@ -168,6 +216,6 @@ async function boot() {
 }
 
 // A handle for poking at the app from DevTools.
-window.tint = { player, apple, youtube, library, prefs, update };
+window.tint = { player, apple, youtube, library, prefs, update, collection, backup };
 
 boot();

@@ -211,6 +211,97 @@ input, textarea, select { font: inherit; color: inherit; }
 .deck-art img.is-entering { opacity: 0; scale: 1.06; }
 .sleeve-empty { position: absolute; inset: 0; fill: none; stroke: var(--line); stroke-width: 1.2; }
 .deck-art.has-art .sleeve-empty { display: none; }
+/* The cover and title open the song up close (closer.js). */
+.deck-art.is-openable, #deck-title.is-openable { cursor: zoom-in; }
+.deck-art.is-openable:hover { box-shadow: 0 26px 50px -20px rgb(0 0 0 / 0.65); }
+.deck-art.is-openable:hover img { scale: 1.03; }
+#deck-title.is-openable:hover { text-decoration: underline; text-decoration-color: color-mix(in oklab, var(--ink) 35%, transparent); text-underline-offset: 3px; }
+
+/* ---- the song up close (closer.js) --------------------------------------------------------------- */
+
+.closer {
+  position: fixed;
+  inset: 0;
+  z-index: 35;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: rgb(0 0 0 / 0.55);
+  opacity: 0;
+  transition: opacity 0.3s var(--ease);
+}
+.closer.is-open { opacity: 1; }
+.closer.is-closing { opacity: 0; transition-duration: 0.22s; }
+/* The cover itself, blurred and dimmed, fills the window behind. */
+.closer-backdrop {
+  position: absolute;
+  inset: -60px;
+  /* Dark whatever the window's colours are, so the white words on it always read. */
+  background: #16181a center / cover no-repeat;
+  filter: blur(48px) saturate(1.3) brightness(0.55);
+  scale: 1.1;
+  transition: background-image 0.6s var(--ease);
+}
+.closer-body {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 22px;
+  width: 100%;
+  max-height: 100%;
+  padding: 56px 24px 32px;
+  color: #fff;
+}
+.closer-art {
+  margin: 0;
+  /* As large as fits with the words and buttons under it. */
+  width: max(160px, min(calc(100vh - 290px), 640px, calc(100vw - 48px)));
+  aspect-ratio: 1;
+  border-radius: 10px;
+  overflow: hidden;
+  background: rgb(255 255 255 / 0.06);
+  box-shadow: 0 40px 90px -30px rgb(0 0 0 / 0.8);
+  scale: 0.9;
+  translate: 0 18px;
+  transition: scale 0.5s var(--ease), translate 0.5s var(--ease);
+}
+.closer.is-open .closer-art { scale: 1; translate: none; }
+.closer.is-closing .closer-art { scale: 0.94; transition-duration: 0.22s; }
+.closer-art.is-new .closer-img { animation: arrive 0.45s var(--ease); }
+.closer-img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.closer-img.is-blank .cover { width: 100%; height: 100%; }
+.closer-text { display: grid; justify-items: center; gap: 4px; max-width: min(640px, 100%); text-align: center; }
+.closer-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  padding: 2px 10px;
+  border-radius: 8px;
+  font: 700 clamp(22px, 3.2vw, 32px)/1.2 var(--display);
+  font-variation-settings: 'wdth' 90;
+  overflow-wrap: anywhere;
+  cursor: copy;
+  transition: background-color 0.2s var(--ease);
+}
+.closer-title:hover { background: rgb(255 255 255 / 0.1); }
+.closer-copy { display: inline-grid; opacity: 0; transition: opacity 0.2s var(--ease); }
+.closer-copy svg { width: 18px; height: 18px; }
+.closer-title:hover .closer-copy, .closer-title:focus-visible .closer-copy { opacity: 0.8; }
+.closer-by { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 2px 8px; color: rgb(255 255 255 / 0.72); font-size: 15px; }
+.closer-link { color: inherit; font-weight: 600; border-radius: 4px; }
+.closer-link:hover { color: #fff; text-decoration: underline; text-underline-offset: 3px; }
+.closer-dot { opacity: 0.6; }
+.closer-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; }
+.closer .btn { background: rgb(255 255 255 / 0.12); color: #fff; backdrop-filter: blur(6px); }
+.closer .btn:hover:not(:disabled) { background: rgb(255 255 255 / 0.2); }
+.closer .btn.is-done .btn-icon { color: #8fe3a5; }
+.closer-close { position: absolute; top: 14px; right: 14px; color: #fff; background: rgb(255 255 255 / 0.1); }
+.closer-close:hover:not(:disabled) { background: rgb(255 255 255 / 0.2); }
+.closer :focus-visible { outline-color: #fff; }
+/* Closing then opening again shouldn't pass clicks through the fading layer. */
+.closer.is-closing { pointer-events: none; }
 
 .deck-meta {
   display: grid;
@@ -330,7 +421,46 @@ input, textarea, select { font: inherit; color: inherit; }
 .lyric.is-gap { letter-spacing: 0.2em; }
 .lyrics.is-plain p { color: var(--ink); font: 600 19px/1.5 var(--display); }
 .lyric-translation { display: block; margin-top: 2px; font-size: 0.62em; font-weight: 500; line-height: 1.35; }
-.lyrics.is-plain p.lyric-translation { margin: 0 0 6px; color: var(--dim); font-size: 15px; font-weight: 500; line-height: 1.4; }
+.lyrics.is-plain .lyric-plain .lyric-translation { margin: 2px 0 6px; color: var(--dim); font-size: 15px; font-weight: 500; line-height: 1.4; }
+
+/* Choosing lines to copy: every line wakes up, and chosen ones take the accent. */
+.lyric-plain { margin-left: -12px; padding: 2px 12px; border-radius: 8px; transition: background-color 0.2s var(--ease), box-shadow 0.2s var(--ease); }
+.is-picking .lyric, .is-picking .lyric.is-past { opacity: 0.75; }
+.is-picking .lyric-plain { cursor: pointer; }
+.is-picking .lyric-plain:hover { background: var(--hover); }
+.lyric.is-picked, .lyric-plain.is-picked {
+  opacity: 1;
+  background: color-mix(in oklab, var(--accent) 20%, transparent);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.lyric.is-picked:hover, .lyric-plain.is-picked:hover { background: color-mix(in oklab, var(--accent) 26%, transparent); }
+.pick-bar {
+  position: sticky;
+  bottom: 18px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  width: min(100%, 560px);
+  margin-top: 18px;
+  padding: 8px 8px 8px 16px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: color-mix(in oklab, var(--raise) 92%, transparent);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 16px 36px -14px rgb(0 0 0 / 0.5);
+  opacity: 0;
+  translate: 0 16px;
+  pointer-events: none;
+  transition: opacity 0.25s var(--ease), translate 0.35s var(--ease);
+}
+.pick-bar.is-up { opacity: 1; translate: none; pointer-events: auto; }
+.pick-bar:not(.is-up) { visibility: hidden; transition: opacity 0.25s var(--ease), translate 0.35s var(--ease), visibility 0s 0.35s; }
+.pick-count { font-size: 13px; font-weight: 600; color: var(--dim); }
+.pick-actions { display: flex; align-items: center; gap: 12px; }
+.btn.small { height: 32px; padding: 0 14px; }
+.btn[aria-pressed='true'] { background: color-mix(in oklab, var(--accent) 24%, transparent); color: var(--ink); }
 .lyrics-source { margin-top: 26px; }
 .lyrics-working { margin: -8px 0 14px; }
 
@@ -340,8 +470,16 @@ input, textarea, select { font: inherit; color: inherit; }
 
 #bar { display: flex; flex: none; align-items: center; gap: 8px; height: 56px; padding: 0 20px 0 14px; }
 
+/* On Home there is nowhere to go back to: the arrow folds away and the tabs glide over into its place. */
+#b-back {
+  overflow: hidden;
+  transition: width 0.45s var(--ease), margin-right 0.45s var(--ease), opacity 0.25s var(--ease),
+    scale 0.45s var(--ease), background-color 0.2s var(--ease);
+}
+#b-back.is-gone { width: 0; margin-right: -8px; opacity: 0; scale: 0.6; pointer-events: none; }
+
 /* Tabs that don't fit scroll sideways rather than being cut off. */
-#tabs { display: flex; flex: 1; gap: 2px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+#tabs { position: relative; display: flex; flex: 1; gap: 2px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
 #tabs a {
   position: relative;
   padding: 8px 11px;
@@ -353,20 +491,28 @@ input, textarea, select { font: inherit; color: inherit; }
 }
 #tabs a:hover { color: var(--ink); }
 #tabs a[aria-current='page'] { color: var(--ink); }
-#tabs a::after {
-  content: '';
+/* One underline for all the tabs, which glides to the chosen one and takes its width (main.js). */
+#tab-ink {
   position: absolute;
-  left: 11px;
-  right: 11px;
+  left: 0;
   bottom: 2px;
+  width: 0;
   height: 2px;
   border-radius: 1px;
   background: var(--accent);
   opacity: 0;
-  scale: 0 1;
-  transition: scale 0.35s var(--ease), opacity 0.2s var(--ease);
+  pointer-events: none;
+  transition: translate 0.45s var(--ease), width 0.45s var(--ease), opacity 0.2s var(--ease);
 }
-#tabs a[aria-current='page']::after { opacity: 1; scale: 1; }
+#tab-ink.is-on { opacity: 1; }
+#tab-ink.no-slide { transition: none; }
+#tabs a.tab-icon { display: inline-grid; place-items: center; padding: 6px 9px; }
+#tabs a.tab-icon svg { width: 21px; height: 21px; }
+/* On Home the house takes the cover's accent, like the underline beneath it. */
+#tabs a.tab-icon[aria-current='page'] { color: var(--accent); }
+/* Arriving home, the house settles into place with a small bounce. */
+#tabs a.tab-icon[aria-current='page'] svg { animation: home-in 0.5s var(--ease); }
+@keyframes home-in { 0% { scale: 0.7; translate: 0 2px; } 60% { scale: 1.08; translate: 0 -1px; } }
 
 .search { position: relative; flex: 0 1 240px; min-width: 120px; transition: flex-basis 0.3s var(--ease), min-width 0.3s var(--ease); }
 .search-icon { position: absolute; left: 11px; top: 50%; translate: 0 -50%; display: grid; color: var(--dim); pointer-events: none; }
@@ -390,6 +536,30 @@ input, textarea, select { font: inherit; color: inherit; }
 
 /* A page, or a song's title, coming into view. */
 .arrive { animation: arrive 0.4s var(--ease); }
+/* A song fades in the first time it scrolls into view (ui.js, fadeInWhenSeen). */
+/* A soft glide: a few pixels of travel with the fade, so a song coming in at the edge of the window
+   eases in rather than blinking on. Two classes, so this outranks a row's own transition (its
+   hover colour), which it keeps. */
+.fresh.fresh {
+  opacity: 0;
+  translate: 0 14px;
+  transition: opacity 0.55s var(--ease) var(--stagger, 0ms), translate 0.6s var(--ease) var(--stagger, 0ms),
+    background-color 0.2s var(--ease);
+}
+.fresh.from-above { translate: 0 -14px; }
+.fresh.from-right { translate: 22px 0; }
+.fresh.from-left { translate: -22px 0; }
+.fresh.is-seen { opacity: 1; translate: none; }
+.cover img.no-fade { transition: none; }
+/* Opening a playlist, album or artist (views.js, opening). Quick: all of it is done within half a second. */
+.opening .detail-art { animation: cover-in 0.4s var(--ease) both; }
+@keyframes cover-in { from { opacity: 0; scale: 0.9; } }
+.opening .detail-text > * { animation: arrive 0.35s var(--ease) both; animation-delay: calc(40ms + var(--i, 0) * 30ms); }
+.opening .tracks .row { animation: arrive 0.35s var(--ease) both; animation-delay: calc(120ms + var(--i, 12) * 16ms); }
+
+/* Search results rise in a section at a time, their rows one after another (views.js, searchView). */
+.reveal > h2, .reveal.empty { animation: arrive 0.4s var(--ease) both; animation-delay: calc(0ms - var(--past, 0ms)); }
+.reveal .row, .reveal .card { animation: arrive 0.45s var(--ease) both; animation-delay: calc(60ms + var(--i, 0) * 28ms - var(--past, 0ms)); }
 @keyframes arrive { from { opacity: 0; translate: 0 10px; } }
 
 .page-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px 20px; margin: 10px 0 22px; }
@@ -400,6 +570,7 @@ input, textarea, select { font: inherit; color: inherit; }
 }
 .page-head .quiet { margin-top: 4px; }
 .page-head-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.home-hint { margin: -10px 0 0; }
 
 .segmented { display: inline-flex; padding: 2px; border-radius: 18px; background: var(--hover); }
 .segmented button { height: 32px; padding: 0 13px; border-radius: 16px; color: var(--dim); font-weight: 600; font-size: 13px; transition: background-color 0.2s var(--ease), color 0.2s var(--ease); }
@@ -442,7 +613,8 @@ input, textarea, select { font: inherit; color: inherit; }
   border-radius: 4px;
   background: var(--raise);
 }
-.cover img { display: block; width: 100%; height: 100%; object-fit: cover; transition: scale 0.5s var(--ease); }
+.cover img { display: block; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: scale 0.5s var(--ease), opacity 0.35s var(--ease); }
+.cover img.is-loaded { opacity: 1; }
 .cover.is-blank { display: grid; place-items: center; color: var(--dim); }
 .cover.is-blank svg { width: 34%; height: 34%; opacity: 0.6; }
 
@@ -524,6 +696,10 @@ input, textarea, select { font: inherit; color: inherit; }
 
 .tracks { margin: 0 -10px; }
 .vlist { position: relative; overflow: hidden; }
+.vgrid { position: relative; }
+.vgrid-inner { position: absolute; top: 0; left: 0; right: 0; will-change: transform; }
+/* Cards in a windowed grid are measured, so each is laid out for real rather than at a guessed size. */
+.vgrid .card { content-visibility: visible; }
 .vlist-inner { position: absolute; top: 0; left: 0; right: 0; will-change: transform; }
 
 .row {
@@ -676,6 +852,79 @@ details .field { margin-top: 10px; }
 
 .duration { display: grid; gap: 4px; max-width: 420px; margin-top: 16px; }
 .duration-head { display: flex; justify-content: space-between; gap: 12px; }
+/* How long page copies are kept: the menu is as wide as its words, not the panel. */
+.cache-keep { justify-items: start; gap: 7px; margin-top: 16px; }
+.cache-about { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); }
+.settings .panel > .segmented { margin-top: 12px; }
+
+/* ---- a Spotify list's songs, found elsewhere ------------------------------------------------------ */
+
+.spotify-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 4px 0 18px; }
+.spotify-gap { flex: 1; }
+
+/* ---- the welcome on a first start ----------------------------------------------------------------- */
+
+/* Nothing to browse or search yet: the bar keeps its place, empty. */
+body.is-welcoming #bar > * { visibility: hidden; }
+.welcome { max-width: 760px; }
+.welcome-step { margin-top: 30px; }
+.welcome-step h2 { margin: 0 0 4px; font-size: 18px; }
+.welcome-step > .quiet { margin: 0; }
+.welcome-choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin-top: 16px; }
+.welcome-choice {
+  position: relative;
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  padding: 16px 16px 18px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--hover);
+  cursor: pointer;
+  transition: background-color 0.2s var(--ease), border-color 0.2s var(--ease), box-shadow 0.2s var(--ease), translate 0.2s var(--ease);
+}
+.welcome-choice:hover { background: var(--press); translate: 0 -2px; }
+/* The radio itself is the whole card; the ring at its corner says which is chosen. */
+.welcome-choice input { position: absolute; opacity: 0; pointer-events: none; }
+.welcome-choice::after {
+  content: '';
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 18px;
+  height: 18px;
+  box-sizing: border-box;
+  border: 2px solid color-mix(in oklab, var(--ink) 30%, transparent);
+  border-radius: 50%;
+  transition: border 0.2s var(--ease);
+}
+.welcome-choice:has(input:checked) {
+  border-color: var(--accent);
+  background: color-mix(in oklab, var(--accent) 14%, transparent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.welcome-choice:has(input:checked)::after { border: 6px solid var(--accent); }
+.welcome-choice:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 3px; }
+.welcome-choice-icon { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 10px; background: var(--hover); color: var(--ink); }
+.welcome-choice:has(input:checked) .welcome-choice-icon { background: var(--accent); color: var(--on-accent, #fff); }
+.welcome-choice-icon svg { width: 22px; height: 22px; }
+.welcome-choice-text { display: grid; gap: 4px; }
+.welcome-choice-text strong { font-size: 15px; }
+.welcome-choice-text .quiet { font-size: 13px; line-height: 1.45; }
+.welcome-note {
+  display: flex;
+  gap: 14px;
+  margin-top: 30px;
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--hover);
+}
+.welcome-note-icon { flex: none; display: grid; place-items: center; width: 36px; height: 36px; border-radius: 10px; background: color-mix(in oklab, var(--accent) 22%, transparent); color: var(--ink); }
+.welcome-note-icon svg { width: 20px; height: 20px; }
+.welcome-note p { margin: 4px 0 0; color: var(--dim); font-size: 14px; line-height: 1.5; }
+.welcome-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 18px; margin: 30px 0 40px; }
+.welcome-actions .btn.primary { height: 42px; padding: 0 24px; font-size: 15px; }
 .duration .slider::-webkit-slider-thumb { opacity: 1; transform: none; }
 
 .check { display: flex; align-items: flex-start; gap: 12px; cursor: pointer; }
@@ -685,6 +934,106 @@ details .field { margin-top: 10px; }
 .panel p.explicit-help { margin: 8px 0 0 30px; }
 .panel ol.explicit-steps { margin: 6px 0 0 30px; font-size: 13px; }
 .about { padding-top: 18px; border-top: 1px solid var(--line); }
+
+/* ---- saved playlists: pins and tags ------------------------------------------------------------- */
+
+/* Each tag carries its own colour as --tag; it is mixed with the window's ink so it reads on any cover. */
+.tag-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--tag, var(--dim)); }
+.tag-label {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  gap: 5px;
+  max-width: 100%;
+  height: 21px;
+  padding: 0 9px 0 8px;
+  border-radius: 11px;
+  background: color-mix(in oklab, var(--tag) 22%, transparent);
+  color: color-mix(in oklab, var(--tag) 45%, var(--ink));
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.card-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+.card-pin {
+  position: absolute;
+  top: 7px;
+  left: 7px;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--on-accent);
+  box-shadow: 0 4px 12px -4px rgb(0 0 0 / 0.6);
+}
+.card-pin svg { width: 15px; height: 15px; rotate: 30deg; }
+
+.tag-filter { display: flex; flex-wrap: wrap; gap: 8px; margin: -8px 0 24px; }
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  padding: 0 13px;
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  color: var(--dim);
+  font-weight: 600;
+  font-size: 13px;
+  transition: background-color 0.2s var(--ease), color 0.2s var(--ease), border-color 0.2s var(--ease);
+}
+.tag-chip:hover { color: var(--ink); background: var(--hover); }
+.tag-chip[aria-pressed='true'] {
+  color: var(--ink);
+  border-color: color-mix(in oklab, var(--tag, var(--ink)) 60%, transparent);
+  background: color-mix(in oklab, var(--tag, var(--ink)) 20%, transparent);
+}
+
+.save-area { display: contents; }
+.detail-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.btn.is-saved .btn-icon { color: var(--accent); }
+
+.tag-panel { width: 270px; padding: 10px; }
+.tag-panel-title { padding: 2px 4px 8px; font-weight: 600; font-size: 13px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.tag-panel-hint { padding: 0 4px 8px; }
+.tag-panel .tag-option { display: flex; align-items: center; gap: 4px; }
+.tag-panel .tag-option button { width: auto; }
+.tag-panel .tag-name { flex: 1; display: flex; justify-content: space-between; min-width: 0; }
+.tag-panel .tag-name > span:first-child { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.tag-check { color: var(--accent); font-weight: 700; }
+.tag-panel .tag-delete { flex: none; padding: 0; opacity: 0.55; }
+.tag-panel .tag-delete:hover { opacity: 1; }
+.tag-swatch {
+  flex: none;
+  width: 18px !important;
+  height: 18px;
+  margin: 0 5px;
+  padding: 0 !important;
+  border-radius: 50% !important;
+  background: var(--tag) !important;
+  transition: scale 0.2s var(--ease), box-shadow 0.2s var(--ease);
+}
+.tag-swatch:hover { scale: 1.15; }
+.tag-swatch[aria-checked='true'] { box-shadow: 0 0 0 2px var(--raise), 0 0 0 4px var(--ink); }
+.tag-new { display: flex; gap: 6px; margin-top: 8px; padding-top: 10px; border-top: 1px solid var(--line); }
+.tag-new input {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--deep);
+}
+.tag-new input:focus { outline: none; border-color: var(--accent); }
+.tag-panel .tag-new .btn { width: auto; height: 32px; padding: 0 14px; border-radius: 16px; text-align: center; background: var(--hover); }
+.tag-colors { display: flex; justify-content: space-between; padding: 10px 4px 2px; }
+.tag-colors .tag-swatch { margin: 0; }
 
 /* ---- menu and toasts ---------------------------------------------------------------------------- */
 
@@ -742,7 +1091,7 @@ details .field { margin-top: 10px; }
 @container browse (max-width: 640px) {
   #bar { gap: 4px; padding: 0 12px 0 8px; }
   #tabs a { padding: 8px 9px; }
-  #tabs a::after { left: 9px; right: 9px; }
+  #b-back.is-gone { margin-right: -4px; }
   /* The search box folds down to its icon, and opens out again while it is in use. */
   .search { flex: 0 0 36px; min-width: 36px; }
   .search input { padding-right: 0; cursor: pointer; }

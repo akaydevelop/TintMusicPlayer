@@ -34,6 +34,14 @@ sealed class Settings
     /// <summary>How long a skipped song fades into the next, in milliseconds (0 cuts straight away).</summary>
     public int CrossfadeMs { get; set; } = 800;
 
+    /// <summary>Saved copies of pages not opened or played from for this many days are forgotten (0 keeps them).</summary>
+    public int CacheKeepDays { get; set; } = 30;
+
+    /// <summary>Where the music mostly comes from: "apple", "youtube" or "pc". Songs from elsewhere are looked for there first.</summary>
+    public string MainService { get; set; } = "";
+    /// <summary>Whether the first-run welcome was answered. Null in settings from before it existed.</summary>
+    public bool? Welcomed { get; set; }
+
     public int[]? Bounds { get; set; }
     public bool Maximized { get; set; }
 
@@ -43,6 +51,7 @@ sealed class Settings
     public static Settings Load()
     {
         Settings s;
+        bool fresh = !File.Exists(Paths.SettingsFile);
         try
         {
             s = JsonSerializer.Deserialize<Settings>(File.ReadAllText(Paths.SettingsFile), Json) ?? new Settings();
@@ -64,6 +73,18 @@ sealed class Settings
                     s.Folders.Add(path);
             }
             s.FoldersInitialized = true;
+            s.Save();
+        }
+
+        // Someone already using Tint isn't welcomed again; their main service is read from their setup.
+        if (s.Welcomed is null)
+        {
+            s.Welcomed = !fresh;
+            if (!fresh && s.MainService.Length == 0)
+            {
+                bool apple = s.AppleUseWebToken || !string.IsNullOrEmpty(s.AppleRawTokenProtected) || !string.IsNullOrEmpty(s.ApplePrivateKeyProtected);
+                s.MainService = apple ? "apple" : s.YouTubeEnabled ? "youtube" : "pc";
+            }
             s.Save();
         }
         return s;

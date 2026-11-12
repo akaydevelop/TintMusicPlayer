@@ -68,6 +68,8 @@ sealed class LocalServer : IDisposable
         library.Covers.AppleToken = async () => (await token.Get()).Token;
         _discord = discord;
         _webRoot = Path.GetFullPath(webRoot);
+        // Pages not opened or played from for the chosen time are forgotten at each start.
+        if (settings.CacheKeepDays > 0) Task.Run(() => PageCache.Clear(settings.CacheKeepDays));
     }
 
     public void Start()
@@ -288,6 +290,60 @@ sealed class LocalServer : IDisposable
             case "settings" when post:
                 ApplySettings(body);
                 await WriteJson(res, SettingsPayload());
+                return;
+
+            case "collection" when !post:
+                await WriteJson(res, ReadCollection());
+                return;
+
+            case "collection" when post:
+                await WriteJson(res, SaveCollection(body));
+                return;
+
+            case "cache" when !post:
+                await WriteJson(res, PageCache.Read(req.QueryString["key"] ?? "") ?? (object)new { missing = true });
+                return;
+
+            case "cache" when post:
+                if (req.QueryString["key"] is { Length: > 0 } cacheKey && body is JsonObject page) PageCache.Write(cacheKey, page);
+                await WriteJson(res, new { ok = true });
+                return;
+
+            case "cache/touch" when post:
+                if (req.QueryString["key"] is { Length: > 0 } usedKey) PageCache.Touch(usedKey);
+                await WriteJson(res, new { ok = true });
+                return;
+
+            case "cache/size":
+                var (count, bytes) = PageCache.Size();
+                await WriteJson(res, new { count, bytes });
+                return;
+
+            case "cache/clear" when post:
+                await WriteJson(res, new { gone = PageCache.Clear() });
+                return;
+
+            case "save-art" when post:
+                {
+                    var url = body?["url"]?.GetValue<string>() ?? "";
+                    var name = body?["name"]?.GetValue<string>() ?? "Cover";
+                    var path = await SavedArt.Save(url, name, _library);
+                    await WriteJson(res, new { path });
+                    return;
+                }
+
+            case "export" when post:
+                await WriteJson(res, new { path = Backup.Write(body) });
+                return;
+
+            case "show-export" when post:
+                Backup.Show(body?["path"]?.GetValue<string>() ?? "");
+                await WriteJson(res, new { ok = true });
+                return;
+
+            case "show-saved-art" when post:
+                SavedArt.ShowFolder();
+                await WriteJson(res, new { ok = true });
                 return;
 
             case "pick-folder" when post:
@@ -574,6 +630,9 @@ sealed class LocalServer : IDisposable
         youtubePlayer = _settings.YouTubePlayer,
         pauseFadeMs = _settings.PauseFadeMs,
         crossfadeMs = _settings.CrossfadeMs,
+        cacheKeepDays = _settings.CacheKeepDays,
+        mainService = _settings.MainService,
+        welcomed = _settings.Welcomed ?? true,
         apple = new
         {
             teamId = _settings.AppleTeamId ?? "",
@@ -583,6 +642,37 @@ sealed class LocalServer : IDisposable
             useWeb = _settings.AppleUseWebToken,
         },
     };
+
+    readonly object _collectionGate = new();
+
+    /// <summary>The saved playlists, pins and tags. The page owns their shape; the host only keeps them.</summary>
+    JsonNode ReadCollection()
+    {
+        lock (_collectionGate)
+        {
+            try { return JsonNode.Parse(File.ReadAllText(Paths.CollectionFile)) as JsonObject ?? new JsonObject(); }
+            catch { return new JsonObject(); }
+        }
+    }
+
+    JsonNode SaveCollection(JsonNode? body)
+    {
+        if (body is not JsonObject o) return ReadCollection();
+        lock (_collectionGate)
+        {
+            try
+            {
+                var tmp = Paths.CollectionFile + ".tmp";
+                File.WriteAllText(tmp, o.ToJsonString());
+                File.Move(tmp, Paths.CollectionFile, overwrite: true);
+            }
+            catch
+            {
+                // Like settings: never take the player down over them.
+            }
+        }
+        return o;
+    }
 
     void ApplySettings(JsonNode? body)
     {
@@ -601,6 +691,14 @@ sealed class LocalServer : IDisposable
         if (o["youtubePlayer"] is JsonValue youtubePlayer) _settings.YouTubePlayer = youtubePlayer.GetValue<string>() == "ytdlp" ? "ytdlp" : "page";
         if (o["pauseFadeMs"] is JsonValue pauseFade) _settings.PauseFadeMs = Math.Clamp(pauseFade.GetValue<int>(), 0, 1000);
         if (o["crossfadeMs"] is JsonValue crossfade) _settings.CrossfadeMs = Math.Clamp(crossfade.GetValue<int>(), 0, 5000);
+        if (o["cacheKeepDays"] is JsonValue keepDays)
+        {
+            _settings.CacheKeepDays = Math.Clamp(keepDays.GetValue<int>(), 0, 3650);
+            if (_settings.CacheKeepDays > 0) PageCache.Clear(_settings.CacheKeepDays);
+        }
+        if (o["mainService"] is JsonValue main && main.GetValue<string>() is var service && service is "apple" or "youtube" or "pc")
+            _settings.MainService = service;
+        if (o["welcomed"] is JsonValue welcomed) _settings.Welcomed = welcomed.GetValue<bool>();
         if (o["appleTeamId"] is JsonValue team) _settings.AppleTeamId = team.GetValue<string>().Trim();
         if (o["appleKeyId"] is JsonValue keyId) _settings.AppleKeyId = keyId.GetValue<string>().Trim();
         if (o["appleToken"] is JsonValue token)

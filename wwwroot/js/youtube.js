@@ -363,6 +363,21 @@ export function videoIn(text) {
 }
 
 /**
+ * The playlist a YouTube or YouTube Music link points at, or null. A song link that only names the
+ * mix YouTube made around it (a "list=RD…") is left to videoIn, so the song itself opens.
+ */
+export function playlistIn(text) {
+  let url;
+  try { url = new URL(text.trim()); } catch { return null; }
+  const host = url.hostname.replace(/^(www|m|music)\./, '');
+  if (host !== 'youtube.com' && host !== 'youtu.be') return null;
+  const id = url.searchParams.get('list') || (url.pathname.startsWith('/browse/VL') ? url.pathname.slice(10) : null);
+  if (!/^[\w-]{10,}$/.test(id || '')) return null;
+  if (id.startsWith('RD') && videoIn(text)) return null;
+  return id;
+}
+
+/**
  * The song a link points at. Search doesn't always turn up a video YouTube Music can play, so this
  * asks for the video itself, the way the site does when a link is opened.
  */

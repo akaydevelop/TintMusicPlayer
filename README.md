@@ -13,6 +13,11 @@ colors from the cover of the song that is playing.
 A release download (`Tint-<version>-win-x64.zip`) holds the same `dist` folder.
 Needs Windows 11, the .NET 10 Desktop Runtime and the Edge WebView2 Runtime (part of Windows 11).
 
+The first start asks two things: where you listen most (Apple Music, YouTube Music or only this
+PC), and which folders hold music on this PC, with the iTunes and Apple Music folders already
+filled in when they exist. Choosing a service leads to its setup in Settings. Both answers can be
+changed in Settings later.
+
 ### On Linux
 
     tools/linux/install.sh                   # builds and installs for this user (needs the .NET 10 SDK)
@@ -110,12 +115,19 @@ A YouTube or YouTube Music link pasted into the search box opens that very video
 the results, followed by what a search for its title finds. Search doesn't list every video
 YouTube Music can play, so this reaches the ones it misses.
 
+A link to a YouTube playlist opens the playlist itself, ready to play or to save (see Home and
+saved playlists, below). A song's link that only names the mix YouTube made around it still opens
+the song.
+
 A Spotify link (a song, an album or a playlist) pasted into the search box finds the same songs
 on Apple Music and YouTube Music. Tint doesn't play from Spotify or need an account there: it
 reads the titles, artists and lengths from the small player Spotify lets other sites embed
 (`Spotify.cs`), which lists a playlist's first 100 songs. A song shows its match on each service
-that has it, and an album or playlist becomes one list, each song from Apple Music where it's
-there and from YouTube Music otherwise.
+that has it, and an album or playlist becomes one list, each song from the main service chosen
+at the first start where it's there and from the other otherwise (with both set up, the page
+can look on either one first). "Save as a playlist in Tint" keeps that list as a playlist of
+Tint's own (see below), so it opens and plays without searching again; the same link pasted
+later leads back to it, or replaces its songs with a new search.
 
 Signed in to Google (below), the albums, songs and playlists of your own YouTube Music library
 join the Albums, Songs and Playlists pages as a source next to this PC and Apple Music.
@@ -152,6 +164,35 @@ off at 0. Files and songs fetched with yt-dlp cross over each other on two `<aud
 does any skip from one service to another. MusicKit and the YouTube Music page each sound one
 song at a time, so between two of their own songs the last fades out and then the next fades in.
 
+## Home and saved playlists
+
+Tint opens on Home (the house in the bar): the playlists you pinned, the songs played lately
+(`history.js` keeps the last forty), playlists saved lately and the albums newest to this PC.
+
+"Save" on a playlist's page, or a right-click on its cover, keeps the playlist in Tint itself,
+apart from any service's library (`collection.js`; the host stores it as `collection.json`). A
+saved playlist can be pinned to the top of Home and of the Playlists page, and given tags, each
+with a name and a color; the Playlists page can be narrowed to one tag. A copy of its songs is
+kept with it, so it still opens and plays if the service loses it.
+
+Every playlist and album page opened is also kept on this PC (`pagecache.js`, `PageCache.cs`), so
+it opens at once the next time while the service is asked for anything new. Settings shows how
+much is kept and can clear it; copies not opened or played from for a while (a month, unless
+changed there) are forgotten at each start. Lists and grids only build the rows on screen.
+
+All of this stays on this PC, with no account behind it. "Export a backup" in Settings, under
+Saved data, writes the saved playlists and tags, the songs played lately and the settings (never
+sign-ins, keys or tokens) to `Tint backup <date>.json` in Downloads (`backup.js`, `Backup.cs`);
+"Import a backup", there or on the first start, adds them to another install. Playlists already
+there keep their songs, and tags are matched by name.
+
+## The song up close
+
+Clicking the cover or the title of the song playing shows it large over a blur of itself
+(`closer.js`). The title there copies itself when clicked, the artist and album lead to their
+pages, and "Save cover" puts the largest picture the service has in `Pictures\Tint` (`SavedArt.cs`). "Copy title"
+is also in the menu of every song.
+
 ## Artists
 
 An artist has one page, whether it is opened from Apple Music, YouTube Music, an album on this PC,
@@ -176,6 +217,10 @@ and length. Plain lyrics are shown only when nobody has timed ones. Last, when n
 all, is [Genius](https://genius.com): its lyrics are never timed, and it has no song lengths to
 compare, so a search result has to agree on both the title and the artist. Genius has no public
 way to read lyrics, so they come from its song pages, and a change to those pages can stop this.
+
+"Copy lines" at the top of the page turns clicking a line into choosing it (Shift picks a run),
+and copies the chosen lines as they are shown, romaji and translation included. A right-click on
+a line copies just that line, or all of them.
 
 Lyrics can be translated with the menu at the top of the page; each translated line shows under
 the original, and the language chosen is kept for later songs. The host sends the lines to Google
@@ -221,9 +266,10 @@ match is found the status goes out without one.
 - `wwwroot\` is the UI in plain HTML, CSS and JavaScript modules. No framework, no build step.
   `player.js` owns the queue and drives two engines (an `<audio>` element for files and for
   YouTube songs, MusicKit for Apple Music); `palette.js` reads cover colors; `views.js` holds the
-  pages; `youtube.js` reads YouTube Music's answers.
+  pages; `youtube.js` reads YouTube Music's answers; `collection.js` keeps saved playlists, pins
+  and tags.
 - App data lives in `%LOCALAPPDATA%\Tint` on Windows and `~/.local/share/Tint` on Linux (settings,
-  library cache, cover thumbnails, browser profile). `TINT_DATA` points it elsewhere, for trying a
+  library cache, saved playlists, page copies, cover thumbnails, browser profile). `TINT_DATA` points it elsewhere, for trying a
   build out without touching the settings of the copy in daily use.
 
 ## Working on it
