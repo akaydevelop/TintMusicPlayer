@@ -30,6 +30,8 @@ sealed class Track
     public string? ArtSource { get; set; }
     public bool Playable { get; set; } = true;
     public string? Reason { get; set; }
+    /// <summary>Which version of <see cref="Library"/>'s tag reader filled this in. Older cache entries are read again.</summary>
+    public int Reader { get; set; }
 }
 
 /// <summary>The music files on this PC: scanned once, cached, and kept fresh by folder watchers.</summary>
@@ -158,7 +160,7 @@ sealed class Library : IDisposable
                 }
 
                 var mtime = file.LastWriteTimeUtc.Ticks;
-                if (known.TryGetValue(file.FullName, out var cached) && cached.Size == file.Length && cached.MTime == mtime)
+                if (known.TryGetValue(file.FullName, out var cached) && cached.Size == file.Length && cached.MTime == mtime && cached.Reader == ReaderVersion)
                 {
                     bag.Add(cached);
                     return;
@@ -192,6 +194,9 @@ sealed class Library : IDisposable
         }
     }
 
+    /// <summary>Bump when <see cref="Read"/> learns to find more, so cached tracks are read again.</summary>
+    const int ReaderVersion = 2;
+
     static Track Read(FileInfo file, long mtime)
     {
         var track = new Track
@@ -203,19 +208,31 @@ sealed class Library : IDisposable
             Added = new DateTimeOffset(file.CreationTimeUtc).ToUnixTimeSeconds(),
             Title = CleanFileTitle(System.IO.Path.GetFileNameWithoutExtension(file.Name)),
             Artist = "Unknown artist",
+            Reader = ReaderVersion,
         };
 
         try
         {
             using var tagged = TagLib.File.Create(file.FullName, TagLib.ReadStyle.Average | TagLib.ReadStyle.PictureLazy);
             var tag = tagged.Tag;
-            if (!string.IsNullOrWhiteSpace(tag.Title)) track.Title = tag.Title.Trim();
-            track.Artist = FirstNonEmpty(tag.FirstPerformer, tag.FirstAlbumArtist) ?? "Unknown artist";
-            track.AlbumArtist = FirstNonEmpty(tag.FirstAlbumArtist);
-            track.Album = FirstNonEmpty(tag.Album);
+            // Some iTunes Store purchases arrive with only the "sort as" names filled in, so those stand in for the real ones.
+            var title = FirstNonEmpty(tag.Title, tag.TitleSort);
+            if (title != null) track.Title = title;
+            track.Artist = FirstNonEmpty(tag.FirstPerformer, tag.FirstAlbumArtist, tag.FirstPerformerSort, tag.FirstAlbumArtistSort) ?? "Unknown artist";
+            track.AlbumArtist = FirstNonEmpty(tag.FirstAlbumArtist, tag.FirstAlbumArtistSort);
+            track.Album = FirstNonEmpty(tag.Album, tag.AlbumSort);
             track.Genre = FirstNonEmpty(tag.FirstGenre);
             track.TrackNo = (int)tag.Track;
             track.DiscNo = (int)tag.Disc;
+
+            if (track.AlbumArtist == null && track.Album != null && string.IsNullOrWhiteSpace(tag.Album))
+            {
+                // Without an album artist, a guest on one song would split it into its own album.
+                // Apple files purchases as <artist>\<album>\<song>, so the folders name the album's artist.
+                var albumDir = file.Directory;
+                if (albumDir?.Parent != null && string.Equals(albumDir.Name.TrimEnd('.', '_'), SafeFolderName(track.Album), StringComparison.OrdinalIgnoreCase))
+                    track.AlbumArtist = albumDir.Parent.Name;
+            }
             track.Year = (int)tag.Year;
             track.HasArt = tag.Pictures.Length > 0;
 
@@ -240,7 +257,25 @@ sealed class Library : IDisposable
         {
             // Tags are optional. The file name stands in for the title.
         }
+
+        if (track.TrackNo == 0)
+        {
+            // "05 Caramel" or "1-05 Caramel": the number in front is the track's place on the album.
+            var m = System.Text.RegularExpressions.Regex.Match(System.IO.Path.GetFileNameWithoutExtension(file.Name), @"^(?:(\d{1,2})-)?(\d{1,3})[ ._-]");
+            if (m.Success)
+            {
+                track.TrackNo = int.Parse(m.Groups[2].Value);
+                if (track.DiscNo == 0 && m.Groups[1].Success) track.DiscNo = int.Parse(m.Groups[1].Value);
+            }
+        }
         return track;
+    }
+
+    /// <summary>A name as Apple shortens it for a folder: characters Windows refuses become underscores.</summary>
+    static string SafeFolderName(string name)
+    {
+        var bad = System.IO.Path.GetInvalidFileNameChars();
+        return new string(name.Select(c => Array.IndexOf(bad, c) >= 0 ? '_' : c).ToArray()).TrimEnd('.', ' ', '_');
     }
 
     /// <summary>
