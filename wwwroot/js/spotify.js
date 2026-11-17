@@ -19,9 +19,9 @@ export function linkIn(text) {
   return path ? { kind: path[1], id: path[2] } : null;
 }
 
-/** What the link points at: { kind, title, artist, art, songs: [{ title, artist, duration, explicit }] }, or null. */
-export async function lookUp(link) {
-  const res = await get(`/api/spotify?kind=${link.kind}&id=${link.id}`);
+/** What the link points at: { kind, title, artist, art, songs: [{ title, artist, duration, explicit, spotifyId }] }, or null. */
+export async function lookUp(link, fresh = false) {
+  const res = await get(`/api/spotify?kind=${link.kind}&id=${link.id}${fresh ? '&fresh=1' : ''}`);
   return res.found;
 }
 

@@ -182,6 +182,12 @@ renames, recolors or deletes any of them; "Edit tags" on the Playlists page does
 tags, and a playlist dragged onto a tag there is given it. A copy of its songs is
 kept with it, so it still opens and plays if the service loses it.
 
+A saved playlist opens and plays from that copy, and keeps the link it came from: its Apple
+Music or YouTube Music page, or the Spotify list it was made from. The service is asked again only
+when "Refresh" on its page is pressed: an Apple Music or YouTube Music playlist then takes its songs
+as they are now, and one made from a Spotify list keeps which of the list's songs it has already
+looked for, so only songs added since (and ones not found before) are searched for and added.
+
 Every playlist and album page opened is also kept on this PC (`pagecache.js`, `PageCache.cs`), so
 it opens at once the next time while the service is asked for anything new. Settings shows how
 much is kept and can clear it; copies not opened or played from for a while (a month, unless

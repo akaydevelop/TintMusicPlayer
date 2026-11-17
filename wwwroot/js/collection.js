@@ -19,7 +19,26 @@ export async function load() {
     state.tags = Array.isArray(stored.tags) ? stored.tags : [];
   } catch { /* an unreadable file starts empty rather than stopping the app */ }
   loaded = true;
-  listeners.forEach((fn) => fn());
+  // Playlists saved before links were kept get theirs now.
+  if (state.items.some((item) => !item.url && linkOf(item))) {
+    state.items.forEach((item) => { item.url ||= linkOf(item) || undefined; });
+    changed();
+  } else {
+    listeners.forEach((fn) => fn());
+  }
+}
+
+/**
+ * The web address a saved playlist came from: its YouTube Music or Apple Music page, or the
+ * Spotify list a Tint playlist was made from. Kept with it, so its songs can be checked again later.
+ */
+function linkOf(item) {
+  if (item.from?.url) return item.from.url;
+  if (!item.id) return null;
+  if (item.source === 'youtube') return `https://music.youtube.com/playlist?list=${encodeURIComponent(item.id)}`;
+  // Only Apple's catalog playlists have a page; one in someone's own library (p.…) doesn't.
+  if (item.source === 'apple' && item.id.startsWith('pl.')) return `https://music.apple.com/playlist/${encodeURIComponent(item.id)}`;
+  return null;
 }
 
 let saving = Promise.resolve();
@@ -49,6 +68,8 @@ export function save(playlist) {
   };
   // A playlist made in Tint remembers what it was made from (a Spotify link, say).
   if (playlist.from) fields.from = playlist.from;
+  const url = linkOf(fields);
+  if (url) fields.url = url;
   if (existing) Object.assign(existing, fields);
   else state.items.push({ ...fields, pinned: false, tags: [], savedAt: Date.now() });
   changed();

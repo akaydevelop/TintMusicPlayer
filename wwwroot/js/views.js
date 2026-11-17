@@ -145,6 +145,8 @@ async function tracksOf(item) {
   if (item.source === 'tint') return collection.find(item.href)?.tracks || item.tracks || [];
   const saved = collection.find(item.href);
   if (item.tracks && !saved) return item.tracks;
+  // A playlist saved in Tint plays as it was saved, until Refresh is pressed.
+  if (item.href.includes('#/playlist/') && saved?.tracks?.length) return saved.tracks;
   pagecache.used(item.href);
   const isPlaylist = item.href.includes('#/playlist/');
   const from = item.source === 'youtube' ? youtube : apple;
@@ -1030,7 +1032,7 @@ function homeView() {
 
 // ---- Album, playlist ----------------------------------------------------------------------------
 
-function detailHead({ art, kind, title, byline, bylineHref, facts, description, tracks, saveAs }) {
+function detailHead({ art, kind, title, byline, bylineHref, facts, description, tracks, saveAs, extra }) {
   const playable = tracks.filter((t) => t.playable !== false);
   const save = saveAs && saveArea(saveAs);
   return h('header', { class: 'detail-head' },
@@ -1048,6 +1050,7 @@ function detailHead({ art, kind, title, byline, bylineHref, facts, description, 
         h('button', { class: 'btn', disabled: playable.length < 2, onclick: () => { player.playList(tracks, 0, { shuffle: true }); pagecache.used(location.hash); } },
           h('span', { class: 'btn-icon', icon: 'shuffle' }), 'Shuffle'),
         save,
+        extra,
         h('button', {
           class: 'icon-btn', icon: 'more', 'aria-label': 'More', title: 'More', disabled: !playable.length,
           onclick: (e) => {
@@ -1225,7 +1228,12 @@ function appleAlbumView({ scroller, params }) {
 
 function applePlaylistView({ scroller, params }) {
   const href = `#/playlist/a/${encodeURIComponent(params[0])}`;
-  return asyncView(() => liveOrSaved(href, apple.playlist(params[0])), (playlist) => {
+  // Saved in Tint, it opens as it was saved and Apple Music is asked only when Refresh is pressed.
+  const saved = collection.find(href)?.tracks?.length ? collection.find(href) : null;
+  const fetching = saved
+    ? async () => ({ ...(collection.find(href) || saved), description: '' })
+    : () => liveOrSaved(href, apple.playlist(params[0]));
+  return asyncView(fetching, (playlist) => {
     const list = trackList(scroller, playlist.tracks);
     const length = playlist.tracks.reduce((sum, t) => sum + (t.duration || 0), 0);
     return {
@@ -1237,11 +1245,12 @@ function applePlaylistView({ scroller, params }) {
           facts: [plural(playlist.tracks.length, 'song'), length ? fmtLength(length) : null].filter(Boolean).join(', '),
           description: playlist.description, tracks: playlist.tracks,
           saveAs: { id: params[0], source: 'apple', ...playlist, href },
+          extra: saved ? refreshButton(href) : null,
         }),
         playlist.tracks.length ? list.el : emptyState('This playlist is empty'),
       ],
     };
-  }, { cacheKey: href });
+  }, { cacheKey: saved ? null : href, needsApple: !saved });
 }
 
 function youtubeAlbumView({ scroller, params }) {
@@ -1276,7 +1285,12 @@ function youtubePlaylistView({ scroller, params }) {
       emptyState('YouTube Music is off', 'Switch on YouTube Music in Settings to open and play playlists from YouTube.', linkButton('Open settings', '#/settings', 'primary'))) };
   }
   youtube.warm();
-  return asyncView(() => liveOrSaved(href, youtube.playlist(params[0])), (playlist) => {
+  // Saved in Tint, it opens as it was saved and YouTube Music is asked only when Refresh is pressed.
+  const saved = collection.find(href)?.tracks?.length ? collection.find(href) : null;
+  const fetching = saved
+    ? async () => ({ ...(collection.find(href) || saved), description: '' })
+    : () => liveOrSaved(href, youtube.playlist(params[0]));
+  return asyncView(fetching, (playlist) => {
     const list = trackList(scroller, playlist.tracks);
     const length = playlist.tracks.reduce((sum, t) => sum + (t.duration || 0), 0);
     return {
@@ -1289,12 +1303,13 @@ function youtubePlaylistView({ scroller, params }) {
           facts: [plural(playlist.tracks.length, 'song'), length ? fmtLength(length) : null].filter(Boolean).join(', '),
           description: playlist.description, tracks: playlist.tracks,
           saveAs: { id: params[0], source: 'youtube', ...playlist, href },
+          extra: saved ? refreshButton(href) : null,
         }),
         playlist.tracks.length ? list.el : emptyState('This playlist is empty'),
       ],
     };
   }, {
-    needsApple: false, cacheKey: href,
+    needsApple: false, cacheKey: saved ? null : href,
     waiting: () => (pasted
       ? h('div', { class: 'link-opening' }, pastedNote('youtube', 'YouTube playlist link', 'Opening the playlist…'), h('div', { class: 'match-progress-bar is-busy' }, h('span')))
       : loading()),
@@ -1324,6 +1339,7 @@ function tintPlaylistView({ scroller, params }) {
           title: playlist.title, byline: playlist.artist,
           facts: [plural(playlist.tracks.length, 'song'), length ? fmtLength(length) : null].filter(Boolean).join(', '),
           description: from, tracks: playlist.tracks, saveAs: playlist,
+          extra: playlist.from?.kind === 'spotify' && playlist.from.url ? refreshButton(href) : null,
         }),
         playlist.tracks.length ? list.el : emptyState('This playlist is empty'),
       ],
@@ -1695,6 +1711,87 @@ function spotifyPicker(state) {
       ]);
 }
 
+/**
+ * Brings a saved playlist up to date with where it came from, only when asked: an Apple Music or
+ * YouTube Music playlist takes its songs as they are now, and one made from a Spotify list gains the songs put in it since.
+ */
+function refreshButton(href) {
+  const btn = h('button', { class: 'btn', title: 'Get the songs added since it was saved' });
+  const label = (text) => fill(btn, h('span', { class: 'btn-icon', icon: 'refresh' }), text);
+  label('Refresh');
+  btn.onclick = async () => {
+    const saved = collection.find(href);
+    if (!saved) return;
+    btn.disabled = true;
+    label('Checking…');
+    try {
+      if (saved.source === 'apple' || saved.source === 'youtube') await refreshFromService(saved);
+      else await refreshFromSpotify(saved, label);
+    } catch (e) {
+      toast(e?.message || "The playlist couldn't be checked.");
+    } finally {
+      btn.disabled = false;
+      label('Refresh');
+    }
+  };
+  return btn;
+}
+
+/** The page shows the playlist's songs as they were when it opened, so it opens again with the new ones. */
+function reopen(href) {
+  if (location.hash === href) window.dispatchEvent(new HashChangeEvent('hashchange'));
+}
+
+async function refreshFromService(saved) {
+  if (saved.source === 'apple' && !apple.instance()) throw new Error('Set up Apple Music in Settings to refresh this playlist.');
+  const live = await (saved.source === 'apple' ? apple.playlist(saved.id) : youtube.playlist(saved.id));
+  const before = new Set(saved.tracks.map((t) => t.id));
+  const now = new Set(live.tracks.map((t) => t.id));
+  const added = live.tracks.filter((t) => !before.has(t.id)).length;
+  const removed = saved.tracks.filter((t) => !now.has(t.id)).length;
+  collection.save({ ...live, id: saved.id, source: saved.source, href: saved.href });
+  pagecache.keep(saved.href, { ...live, href: saved.href });
+  if (added || removed) reopen(saved.href);
+  toast(added || removed
+    ? [added && `Added ${plural(added, 'new song')}`, removed && `${added ? 'removed' : 'Removed'} ${plural(removed, 'song')} no longer in it`].filter(Boolean).join(', ') + '.'
+    : 'Already up to date.', { ms: 5000 });
+}
+
+async function refreshFromSpotify(saved, label) {
+  const link = spotify.linkIn(saved.from?.url);
+  if (!link) throw new Error("This playlist doesn't remember its Spotify link.");
+  const found = await spotify.lookUp(link, true);
+  if (!found) throw new Error("That Spotify list can't be found anymore.");
+  const key = (song) => song.spotifyId || `${song.title}\u0001${song.artist}`.toLowerCase();
+  // Songs found before are skipped; ones missing before get another try. Lists saved before
+  // songs were kept with them are compared with the playlist's own songs by name.
+  const before = new Map((saved.from.songs || saved.tracks.map((t) => ({ title: t.title, artist: t.artist, found: true })))
+    .map((song) => [key(song), song.found]));
+  const look = found.songs.filter((song) => !before.get(key(song)));
+  const matched = look.length
+    ? await spotify.matchAll(look, (done, total) => label(`Finding ${done} of ${total}…`), saved.from.service)
+    : [];
+  const have = new Set(saved.tracks.map((t) => t.id));
+  const added = matched.filter((t) => t && !have.has(t.id) && have.add(t.id));
+  const nowFound = new Set(look.filter((_, i) => matched[i]).map(key));
+  collection.save({
+    ...saved,
+    tracks: [...saved.tracks, ...added],
+    from: {
+      ...saved.from, at: Date.now(),
+      songs: found.songs.map((song) => ({
+        spotifyId: song.spotifyId || null, title: song.title, artist: song.artist,
+        found: !!before.get(key(song)) || nowFound.has(key(song)),
+      })),
+    },
+  });
+  if (added.length) reopen(saved.href);
+  const stillMissing = look.length - nowFound.size;
+  toast(added.length
+    ? `Added ${plural(added.length, 'new song')} to "${saved.title}"${stillMissing ? `. ${plural(stillMissing, 'song')} still not found.` : ''}`
+    : stillMissing ? `No new songs found. ${plural(stillMissing, 'song')} still not found.` : 'Already up to date.', { ms: 5000 });
+}
+
 /** Where a Spotify list lives once it is saved in Tint. The same link always lands on the same playlist. */
 const convertedHref = (link) => `#/playlist/t/spotify-${link.kind}-${link.id}`;
 
@@ -1705,7 +1802,11 @@ function saveConverted(state, songs, href) {
     title: found.title.trim(), artist: found.artist.trim(),
     art: found.art ? { url: found.art } : songs[0]?.art || null,
     tracks: songs,
-    from: { kind: 'spotify', what: link.kind, url: `https://open.spotify.com/${link.kind}/${link.id}`, service: state.prefer, at: Date.now() },
+    from: {
+      kind: 'spotify', what: link.kind, url: `https://open.spotify.com/${link.kind}/${link.id}`, service: state.prefer, at: Date.now(),
+      // Every song the list had when it was saved, found or not, so an update later can tell which songs are new.
+      songs: found.songs.map((song, i) => ({ spotifyId: song.spotifyId || null, title: song.title, artist: song.artist, found: !!state.matched[i] })),
+    },
   });
   toast(`Saved "${found.title.trim()}" in Tint`);
 }

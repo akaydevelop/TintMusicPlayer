@@ -12,7 +12,7 @@ namespace Tint;
 /// </summary>
 sealed partial class Spotify
 {
-    public sealed record Song(string Title, string Artist, double Duration, bool Explicit);
+    public sealed record Song(string Title, string Artist, double Duration, bool Explicit, string? SpotifyId);
 
     /// <summary>`Kind` is track, album or playlist; a track's own song is the only one in `Songs`.</summary>
     public sealed record Found(string Kind, string Title, string Artist, string? Art, List<Song> Songs);
@@ -39,11 +39,12 @@ sealed partial class Spotify
     [GeneratedRegex("""<script id="__NEXT_DATA__"[^>]*>(.*?)</script>""", RegexOptions.Singleline)]
     private static partial Regex DataPattern();
 
-    /// <summary>Null when there is nothing at that link.</summary>
-    public Task<Found?> Find(string kind, string id)
+    /// <summary>Null when there is nothing at that link. <paramref name="fresh"/> reads it again, for songs added since.</summary>
+    public Task<Found?> Find(string kind, string id, bool fresh = false)
     {
         if (!KindPattern().IsMatch(kind) || !IdPattern().IsMatch(id)) return Task.FromResult<Found?>(null);
         var key = kind + ':' + id;
+        if (fresh) _found.TryRemove(key, out _);
         var lookup = _found.GetOrAdd(key, _ => Look(kind, id));
         lookup.ContinueWith(_ => _found.TryRemove(key, out var _), TaskContinuationOptions.NotOnRanToCompletion);
         return lookup;
@@ -66,7 +67,7 @@ sealed partial class Spotify
         if (kind == "track")
         {
             artist = string.Join(", ", (entity["artists"] as JsonArray ?? []).Select(a => Text(a?["name"])).OfType<string>());
-            songs.Add(new Song(title, artist, Seconds(entity["duration"]), Explicit(entity)));
+            songs.Add(new Song(title, artist, Seconds(entity["duration"]), Explicit(entity), IdOf(entity) ?? id));
         }
         else
         {
@@ -76,11 +77,15 @@ sealed partial class Spotify
                 if (item is not JsonObject track || Text(track["title"]) is not { Length: > 0 } name) continue;
                 // A playlist can hold podcast episodes too; only songs can be found elsewhere.
                 if (Text(track["entityType"]) is { } type && type != "track") continue;
-                songs.Add(new Song(name, Text(track["subtitle"]) ?? "", Seconds(track["duration"]), Explicit(track)));
+                songs.Add(new Song(name, Text(track["subtitle"]) ?? "", Seconds(track["duration"]), Explicit(track), IdOf(track)));
             }
         }
         return new Found(kind, title, artist, ArtOf(entity), songs);
     }
+
+    /// <summary>"spotify:track:<id>" → the id. Kept with a saved list, so songs added to it later can be told apart.</summary>
+    static string? IdOf(JsonObject item) =>
+        Text(item["uri"]) is { } uri && uri.StartsWith("spotify:track:", StringComparison.Ordinal) ? uri["spotify:track:".Length..] : null;
 
     static string? Text(JsonNode? node) => node is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
 

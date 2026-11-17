@@ -501,7 +501,7 @@ sealed class LocalServer : IDisposable
             case "spotify":
                 try
                 {
-                    await WriteJson(res, new { found = await _spotify.Find(req.QueryString["kind"] ?? "", req.QueryString["id"] ?? "") });
+                    await WriteJson(res, new { found = await _spotify.Find(req.QueryString["kind"] ?? "", req.QueryString["id"] ?? "", req.QueryString["fresh"] == "1") });
                 }
                 catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException)
                 {
