@@ -5,11 +5,14 @@ import { $, h, fill, toast } from './ui.js';
 import { get, post } from './api.js';
 
 const LOOK_EVERY = 6 * 3600e3;
+// "Later" puts the notice away for twelve hours, even across restarts, so it reminds without nagging.
+const LATER_FOR = 12 * 3600e3;
+const LATER_KEY = 'tint.updateLater';
 
 let status = null;
 let polling = null;
-// "Later" puts the notice away for that version until Tint is next started. Settings still shows it.
-let putAway = null;
+// The notice put away with "Later": which version and state, and until when. Settings still shows it.
+let putAway = readLater();
 const listeners = new Set();
 
 export const getStatus = () => status;
@@ -38,8 +41,22 @@ export async function check(force = false) {
   set(await get(`/api/update?check=1${force ? '&force=1' : ''}`).catch(() => null));
 }
 
+function readLater() {
+  try { return JSON.parse(localStorage.getItem(LATER_KEY)) || null; } catch { return null; }
+}
+
+function later() {
+  putAway = { what: `${status.latest}/${status.state}`, until: Date.now() + LATER_FOR };
+  try { localStorage.setItem(LATER_KEY, JSON.stringify(putAway)); } catch { /* then only until Tint closes */ }
+  drawNotice();
+}
+
+/** A newer version, or the same one at a new step (downloaded, failed), shows again at once. */
+const isPutAway = () => putAway?.what === `${status.latest}/${status.state}` && Date.now() < putAway.until;
+
 export async function download() {
   putAway = null;
+  try { localStorage.removeItem(LATER_KEY); } catch { }
   set(await post('/api/update/download').catch(() => null));
 }
 
@@ -82,7 +99,7 @@ const noticeButton = (text, onclick, kind = '') => h('button', { class: 'btn ' +
 function drawNotice() {
   const el = $('update');
   const text = describe();
-  el.hidden = !text || putAway === `${status.latest}/${status.state}`;
+  el.hidden = !text || isPutAway();
   if (el.hidden) return;
 
   fill(el,
@@ -93,11 +110,14 @@ function drawNotice() {
       status.state !== 'downloading' && status.page && h('button', { class: 'text-btn', onclick: openNotes }, "What's new"),
       status.state !== 'downloading' && h('button', {
         class: 'text-btn',
-        onclick: () => { putAway = `${status.latest}/${status.state}`; drawNotice(); },
+        title: 'Remind me in twelve hours',
+        onclick: later,
       }, 'Later')));
 }
 
 export function init() {
   check();
   setInterval(check, LOOK_EVERY);
+  // Once "Later" has run out, the notice comes back without waiting for the next check.
+  setInterval(() => status && drawNotice(), 3600e3);
 }

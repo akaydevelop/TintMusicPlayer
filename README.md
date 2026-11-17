@@ -48,7 +48,8 @@ match Windows' per-user encryption); `~/.local/share/Tint` is made readable by i
 
 A copy installed from a release keeps itself current (`Updater.cs`). Every few hours Tint asks
 GitHub for this repository's releases; when a newer one is out, a notice offers it, and Settings
-shows the same under Updates. Choosing Update downloads that release's package for this system
+shows the same under Updates. "Later" puts the notice away for twelve hours, even if Tint is closed and
+opened again; then it reminds once more. A newer release than the one put away shows at once. Choosing Update downloads that release's package for this system
 and checks it against the SHA-256 GitHub lists for it (a download that doesn't match is thrown
 away). Restart now then puts it in place: the program's files are renamed aside, the new ones
 moved in, and the new Tint starts and clears the old files away. Settings, library and sign-ins
