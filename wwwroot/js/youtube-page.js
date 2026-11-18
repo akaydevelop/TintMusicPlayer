@@ -54,6 +54,7 @@
   let fading = 0;
   let fadeIn = 0;       // how long the song asked for fades in over, once it is playing
   let queued = null;    // starts the song asked for, once the last has faded out
+  let adTold = false;   // an advert has been reported for the song asked for
 
   // Equal power, the same as Tint's own fades, so a crossfade from here matches one from there.
   const loudness = () => (level === null ? null : Math.round(level * Math.sin(gain * Math.PI / 2)));
@@ -111,6 +112,13 @@
   function watch() {
     const p = player();
     if (!p || !wanted) return;
+    // A Premium account never gets adverts, so one means YouTube has this page signed out.
+    // It is kept silent, and Tint takes the song elsewhere and says why.
+    if (p.classList?.contains('ad-showing')) {
+      p.mute();
+      if (!adTold) { adTold = true; say({ is: 'advert', id: wanted }); }
+      return;
+    }
     const id = p.getVideoData()?.video_id;
     const state = p.getPlayerState(); // 1 playing, 2 paused, 3 buffering, 0 ended, -1 and 5 not started
 
@@ -177,6 +185,7 @@
         seen = again;
         finished = false;
         holding = false;
+        adTold = false;
         monitor(true);
         asked = 0;
         told = '';

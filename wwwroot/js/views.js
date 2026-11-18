@@ -2397,12 +2397,13 @@ function settingsView({ params } = {}) {
 
   /** Premium's better audio takes two things: asking as the account that has Premium, and a token. */
   function premiumParts(status) {
-    const signIn = status.signedIn
+    const signIn = status.signedIn && !status.expired
       ? [
         h('p', {}, 'Signed in to Google. yt-dlp asks YouTube as you, using a copy of the sign-in kept in a file in Tint\'s data folder.'),
         h('div', { class: 'panel-actions' }, button('Sign out of Google', () => youtubeStep('signin', () => youtube.signOut()))),
       ]
       : [
+        status.expired && h('p', { class: 'warn' }, "Google has ended Tint's sign-in, so YouTube treats Tint as signed out: adverts and standard audio. Sign in again to get Premium back."),
         h('p', {}, 'Sign in with the Google account that has YouTube Premium. Tint keeps a copy of that sign-in (YouTube\'s part of it only) in a file in its data folder, and yt-dlp asks YouTube as you.'),
         h('p', { class: 'warn' }, "yt-dlp's makers warn that YouTube can restrict or close an account that is used this way."),
         // In the browser-hosted build the sign-in window is a browser Tint can't see into, so it

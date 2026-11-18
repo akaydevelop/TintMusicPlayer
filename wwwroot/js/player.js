@@ -282,7 +282,18 @@ let reloadPage = false;
 let reloadedPage = false;
 
 /** The site's own player is used when Tint is signed in to Google (signed out, the site plays adverts). */
-const usesPage = (track) => prefs.youtubePlayer !== 'ytdlp' && youtube.isSignedIn() && !!window.chrome?.webview && !notOnPage.has(track);
+const usesPage = (track) => prefs.youtubePlayer !== 'ytdlp' && youtube.isSignedIn() && !youtube.isExpired() && !!window.chrome?.webview && !notOnPage.has(track);
+
+let signedOutTold = false;
+
+/** YouTube is treating Tint as signed out: say so once, and look again so the next songs avoid the site's player. */
+function signedOut() {
+  if (!signedOutTold) {
+    signedOutTold = true;
+    toast('YouTube has signed Tint out, so its player started an advert. The song is coming another way; sign in to Google again in Settings to get Premium back.', { ms: 9000 });
+  }
+  youtube.init();
+}
 
 function startOnPage(my, track) {
   const ms = rise;
@@ -313,6 +324,7 @@ window.chrome?.webview?.addEventListener('message', ({ data }) => {
   if (!data || typeof data !== 'object' || engine !== 'page' || track?.source !== 'youtube' || data.id !== track.youtubeId) return;
   if (data.is === 'ended') return finished();
   if (data.is === 'error') return leavePage(session, track);
+  if (data.is === 'advert') { signedOut(); return leavePage(session, track); }
   if (data.is !== 'state') return;
 
   if (data.state === 'playing' && pagePlayed !== session) {

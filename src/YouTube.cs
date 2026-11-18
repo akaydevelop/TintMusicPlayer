@@ -85,6 +85,9 @@ sealed partial class YouTube : IDisposable
             runtime = Deno() != null || OnPath(Exe("node")) != null,
             deno = Deno() != null,
             signedIn = SignedIn,
+            // Google can end the sign-in while the cookie file stays behind. Signed out, the site's
+            // player plays adverts and standard audio, so Tint has to know.
+            expired = SignedIn && await SessionAlive() == false,
             tokens = _tokens.Installed,
         };
     }
@@ -113,12 +116,45 @@ sealed partial class YouTube : IDisposable
         Directory.CreateDirectory(Folder);
         File.WriteAllText(CookieFile, text.ToString(), new UTF8Encoding(false));
         _streams.Clear();
+        _aliveAt = default;
     }
 
     public void ForgetCookies()
     {
         try { File.Delete(CookieFile); } catch { }
         _streams.Clear();
+        _aliveAt = default;
+    }
+
+    bool? _alive;
+    DateTime _aliveAt;
+
+    /// <summary>
+    /// Whether YouTube still takes the kept sign-in as signed in: true, false, or null when it
+    /// couldn't be asked. The answer is kept for ten minutes.
+    /// </summary>
+    public async Task<bool?> SessionAlive()
+    {
+        if (DateTime.UtcNow - _aliveAt < TimeSpan.FromMinutes(10)) return _alive;
+        try
+        {
+            await FreshCookies();
+            if (Cookies() is not { } cookies) return null;
+            var question = new JsonObject { ["context"] = new JsonObject { ["client"] = new JsonObject { ["clientName"] = "WEB_REMIX", ["clientVersion"] = SiteVersion, ["hl"] = "en" } } };
+            using var reply = await Ask($"{Site}/youtubei/v1/account/account_menu?prettyPrint=false", question.ToJsonString(), cookies);
+            if (!reply.IsSuccessStatusCode) return null;
+            var text = await reply.Content.ReadAsStringAsync();
+            // YouTube reports it among the page's tracking parameters: {"key":"logged_in","value":"1"}.
+            var said = System.Text.RegularExpressions.Regex.Match(text, "\"key\":\\s*\"logged_in\",\\s*\"value\":\\s*\"(\\d)\"");
+            if (!said.Success) return null;
+            _alive = said.Groups[1].Value == "1";
+            _aliveAt = DateTime.UtcNow;
+            return _alive;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     /// <summary>Downloads the token add-on (and yt-dlp itself, if Tint has no copy of its own to load it into).</summary>

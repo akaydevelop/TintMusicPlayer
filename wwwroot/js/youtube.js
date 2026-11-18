@@ -64,6 +64,9 @@ export async function init() {
   changed();
 }
 
+/** Google has ended the kept sign-in: the site's player would play as signed out, adverts and all. */
+export const isExpired = () => !!status?.expired;
+
 /** The person's own YouTube Music library can be read once YouTube Music is on and they are signed in to Google. */
 export const isSignedIn = () => isReady() && !!status?.signedIn;
 
@@ -77,6 +80,8 @@ export async function install() {
 /** Opens Google's sign-in window. Resolves to whether a sign-in came out of it. */
 export async function signIn() {
   const res = await post('/api/youtube/signin');
+  // The site's page still holds the old sign-in until it is loaded afresh.
+  if (res.ok) reloadPage = true;
   await init();
   return !!res.ok;
 }
@@ -96,12 +101,14 @@ export async function installTokens() {
 // ---- the site's own player ----------------------------------------------------------------------
 
 let page = null;
+let reloadPage = false;
 
 /**
  * Has the host open music.youtube.com out of sight, so its player can play songs for Tint.
  * Resolves to whether it came up. Asking again while it is open costs nothing.
  */
 export function openPage({ again = false } = {}) {
+  if (reloadPage) { reloadPage = false; again = true; }
   if (again) page = null; // loads the site afresh, which is when it picks up a changed setting
   page ??= post('/api/youtube/page', { again }).then((res) => !!res.ok, () => false).then((open) => {
     if (!open) page = null;
