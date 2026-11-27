@@ -2,12 +2,13 @@
 // `refresh` is called when the data behind the page changes (a scan finished, more of the Apple
 // Music library arrived, a different song started).
 
-import { h, fill, cover, fmtTime, fmtLength, plural, showMenu, showPopover, closeMenu, toast, replay, fadeInWhenSeen, copyText, VirtualList, VirtualGrid } from './ui.js';
+import { h, fill, cover, fmtTime, fmtLength, plural, showMenu, showPopover, closeMenu, toast, replay, copyText, VirtualList, VirtualGrid } from './ui.js';
 import * as player from './player.js';
 import * as apple from './apple.js';
 import * as youtube from './youtube.js';
 import * as spotify from './spotify.js';
 import * as collection from './collection.js';
+import * as likes from './likes.js';
 import * as history from './history.js';
 import * as pagecache from './pagecache.js';
 import * as backup from './backup.js';
@@ -34,19 +35,127 @@ function pageHead(title, summary, ...controls) {
     controls.length ? h('div', { class: 'page-head-controls' }, controls) : null);
 }
 
-function segmented(label, options, value, onPick) {
-  return h('div', { class: 'segmented', role: 'group', 'aria-label': label },
-    options.map(([id, text]) => h('button', {
-      'aria-pressed': String(id === value),
-      onclick: () => onPick(id),
-    }, text)));
+// Remembers each segmented control's last pill position so the highlight pill glides smoothly even across redraws.
+const segMemory = new Map();
+
+function segmented(label, options, value, onPick, { iconsOnly = false } = {}) {
+  const pill = h('span', { class: 'seg-pill', 'aria-hidden': 'true' });
+  const btns = options.map(([id, text, glyph]) => h('button', {
+    type: 'button',
+    'aria-pressed': String(id === value),
+    'aria-label': iconsOnly ? text : null,
+    title: iconsOnly ? text : null,
+    onclick: () => {
+      const cur = wrap.querySelector("button[aria-pressed='true']");
+      if (cur) segMemory.set(label, { left: cur.offsetLeft, width: cur.offsetWidth });
+      onPick(id);
+    },
+  },
+    glyph && h('span', { class: 'seg-icon', icon: glyph }),
+    !iconsOnly && text));
+  const wrap = h('div', { class: 'segmented' + (iconsOnly ? ' is-icons' : ''), role: 'group', 'aria-label': label }, pill, ...btns);
+
+  function place(animate) {
+    const active = wrap.querySelector("button[aria-pressed='true']");
+    if (!active || !wrap.isConnected) return;
+    const to = { left: active.offsetLeft, width: active.offsetWidth };
+    if (!to.width) return;
+    const from = animate ? segMemory.get(label) : null;
+    if (animate) segMemory.delete(label);
+    if (from && (from.left !== to.left || from.width !== to.width) && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      pill.classList.add('no-slide');
+      pill.style.width = `${from.width}px`;
+      pill.style.translate = `${from.left}px 0`;
+      pill.classList.add('is-on');
+      void pill.offsetWidth;
+      pill.classList.remove('no-slide');
+    } else {
+      pill.classList.add('no-slide');
+      pill.classList.add('is-on');
+    }
+    pill.style.width = `${to.width}px`;
+    pill.style.translate = `${to.left}px 0`;
+    if (pill.classList.contains('no-slide')) requestAnimationFrame(() => pill.classList.remove('no-slide'));
+  }
+
+  // Place as soon as connected (avoiding a frame-0 flash) and re-sync if layout/fonts settle.
+  queueMicrotask(() => place(true));
+  requestAnimationFrame(() => { if (!pill.classList.contains('is-on')) place(true); });
+  if (typeof ResizeObserver !== 'undefined') {
+    const ro = new ResizeObserver(() => {
+      if (!wrap.isConnected) { ro.disconnect(); return; }
+      place(false);
+    });
+    ro.observe(wrap);
+  }
+  return wrap;
 }
 
 function select(label, options, value, onPick) {
-  return h('label', { class: 'select' },
-    h('span', { class: 'sr' }, label),
-    h('select', { onchange: (e) => onPick(e.target.value) },
-      options.map(([id, text]) => h('option', { value: id, selected: id === value }, text))));
+  const current = options.find(([id]) => id === value) || options[0] || ['', ''];
+  let open = false;
+  const btn = h('button', {
+    type: 'button',
+    class: 'select-btn',
+    'aria-label': `${label}: ${current[1]}`,
+    'aria-haspopup': 'listbox',
+    'aria-expanded': 'false',
+  },
+    h('span', { class: 'select-label' }, current[1]),
+    h('span', { class: 'select-chev', icon: 'chevronDown' }));
+
+  function toggle() {
+    if (open) { closeMenu(); return; }
+    open = true;
+    btn.classList.add('is-open');
+    btn.setAttribute('aria-expanded', 'true');
+    const r = btn.getBoundingClientRect();
+    const list = h('div', { class: 'select-menu', role: 'listbox', 'aria-label': label },
+      options.map(([id, text]) => {
+        const active = id === value;
+        return h('button', {
+          type: 'button',
+          role: 'option',
+          class: 'select-opt' + (active ? ' is-active' : ''),
+          'aria-selected': String(active),
+          onclick: () => {
+            closeMenu();
+            if (id !== value) onPick(id);
+            btn.focus({ preventScroll: true });
+          },
+        },
+          h('span', { class: 'select-opt-mark', icon: active ? 'check' : null }),
+          h('span', { class: 'select-opt-text' }, text));
+      }));
+    list.style.minWidth = Math.max(168, Math.round(r.width)) + 'px';
+    list.addEventListener('keydown', (e) => {
+      if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return;
+      const opts = [...list.querySelectorAll('.select-opt')];
+      if (!opts.length) return;
+      e.preventDefault();
+      const at = opts.indexOf(document.activeElement);
+      const next = e.key === 'Home' ? 0 : e.key === 'End' ? opts.length - 1
+        : (at + (e.key === 'ArrowDown' ? 1 : -1) + opts.length) % opts.length;
+      opts[next].focus();
+    });
+    const alignRight = r.left + Math.max(168, r.width) > window.innerWidth - 16;
+    showPopover(r.left, r.bottom + 6, list, {
+      anchor: r,
+      align: alignRight ? 'right' : 'left',
+      onClose: () => {
+        open = false;
+        btn.classList.remove('is-open');
+        btn.setAttribute('aria-expanded', 'false');
+      },
+    });
+    (list.querySelector('.select-opt.is-active') || list.querySelector('.select-opt'))?.focus();
+  }
+
+  btn.addEventListener('click', toggle);
+  btn.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); if (!open) toggle(); }
+  });
+  return h('div', { class: 'select' }, btn);
 }
 
 function emptyState(title, body, ...actions) {
@@ -72,20 +181,350 @@ function playingMark() {
   return h('span', { class: 'eq', 'aria-label': 'Playing' }, h('i'), h('i'), h('i'));
 }
 
-function trackMenu(x, y, track) {
+/** Square artwork for a playlist, giving Liked songs its own tinted heart cover. */
+function playlistArt(item, size, opts) {
+  if (item?.href === collection.LIKED_HREF || item?.kind === 'liked') {
+    return h('span', { class: 'cover is-liked', 'aria-hidden': 'true' },
+      h('span', { class: 'liked-mark', icon: 'heartFilled' }));
+  }
+  return cover(item?.art, size, opts);
+}
+
+const SOURCE_ICON = { local: 'pc', apple: 'appleMono', youtube: 'youtubeMono', spotify: 'spotifyMono', tint: 'listMusic' };
+const SOURCE_LABEL = { local: 'This PC', apple: 'Apple Music', youtube: 'YouTube Music', spotify: 'Spotify', tint: 'In Tint' };
+const DEST_LABEL = { tint: 'Tint', apple: 'Apple Music', youtube: 'YouTube Music', spotify: 'Spotify' };
+
+async function runLike(track) {
+  try {
+    const res = await likes.toggleLike(track);
+    toast(res.liked ? `Liked "${track.title}" on ${res.syncedTo.join(', ')}` : `Removed "${track.title}" from Liked (${res.syncedTo.join(', ')})`);
+  } catch (e) {
+    toast(e?.message || "Couldn't sync like.", { ms: 5000 });
+  }
+}
+
+/** Popover to add one or more tracks to platform-synced playlists (YouTube Music, Apple Music, Spotify) or Tint playlists. */
+export function playlistPanel(x, y, tracks = null, { anchor = null } = {}) {
+  const listTracks = Array.isArray(tracks) ? tracks.filter((t) => t?.id) : [];
+  const adding = listTracks.length > 0;
+  const primarySrc = listTracks[0]?.source;
+  const signedDestinations = [
+    ['tint', 'Tint', 'listMusic'],
+    apple.isSignedIn() && ['apple', 'Apple Music', 'appleMono'],
+    youtube.isSignedIn() && ['youtube', 'YouTube Music', 'youtubeMono'],
+    spotify.isSignedIn() && ['spotify', 'Spotify', 'spotifyMono'],
+  ].filter(Boolean);
+  let createDest = signedDestinations.some(([id]) => id === primarySrc) ? primarySrc : 'tint';
+  const addedThisOpen = new Set(); // hrefs of remote playlists added during this popover session
+  let busy = false;
+
+  // Ensure signed-in platforms have started loading their playlists so they appear right away.
+  if (apple.isSignedIn()) apple.libraryPlaylists();
+  if (youtube.isSignedIn()) youtube.libraryPlaylists();
+  if (spotify.isSignedIn()) spotify.libraryPlaylists();
+
+  const panel = h('div', {
+    class: 'tag-panel pl-panel' + (adding ? '' : ' is-create'),
+    role: 'dialog',
+    'aria-label': adding ? 'Add to playlist' : 'New playlist',
+  });
+
+  const createBtn = !adding ? h('button', {
+    type: 'button',
+    class: 'btn primary pl-create-btn',
+    disabled: true,
+    onclick: () => enter(true),
+  }, 'Create') : null;
+
+  const find = h('input', {
+    type: 'text', class: 'tag-find', maxLength: 80, spellcheck: false,
+    placeholder: adding ? 'Find or make a playlist' : 'Playlist name',
+    'aria-label': adding ? 'Find or make a playlist' : 'Playlist name',
+    oninput: () => draw(),
+    onkeydown: (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); enter(); }
+      if (e.key === 'ArrowDown' && adding) { e.preventDefault(); list.querySelector('button')?.focus(); }
+    },
+  });
+  const destHost = h('div', { class: 'pl-dest-host' });
+  const list = h('div', { class: 'tag-list' });
+  list.addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+    const picks = [...list.querySelectorAll('.tag-pick')];
+    const at = picks.indexOf(document.activeElement.closest('.tag-row')?.querySelector('.tag-pick'));
+    if (at < 0) return;
+    e.preventDefault();
+    const next = at + (e.key === 'ArrowDown' ? 1 : -1);
+    (next < 0 ? find : picks[Math.min(next, picks.length - 1)]).focus();
+  });
+
+  /** Editable playlists grouped with the track's own service first, then other signed-in services, then Tint. */
+  function groups() {
+    const order = [primarySrc, 'apple', 'youtube', 'spotify', 'tint']
+      .filter((s, i, arr) => s && ['apple', 'youtube', 'spotify', 'tint'].includes(s) && arr.indexOf(s) === i);
+    const out = [];
+    for (const src of order) {
+      let items = [];
+      if (src === 'tint') items = collection.customPlaylists().map((p) => ({ ...p, source: 'tint' }));
+      else if (src === 'apple' && apple.isSignedIn()) items = apple.editablePlaylists();
+      else if (src === 'youtube' && youtube.isSignedIn()) items = youtube.editablePlaylists();
+      else if (src === 'spotify' && spotify.isSignedIn()) items = spotify.editablePlaylists();
+      if (items.length) out.push({ source: src, label: SOURCE_LABEL[src], icon: SOURCE_ICON[src], items });
+    }
+    return out;
+  }
+
+  const flatAll = () => groups().flatMap((g) => g.items);
+  const named = (name) => flatAll().find((p) => p.title.toLowerCase() === name.trim().toLowerCase());
+
+  function picked() {
+    const q = find.value.trim().toLowerCase();
+    if (!q || !adding) return null;
+    return named(q) || flatAll().find((p) => p.title.toLowerCase().includes(q)) || null;
+  }
+
+  async function toggleIn(pl) {
+    if (!adding || busy) return;
+    if (pl.source === 'tint') {
+      const allIn = listTracks.every((t) => collection.hasTrack(pl.href, t));
+      if (allIn && listTracks.length === 1) {
+        collection.removeTrack(pl.href, listTracks[0].id);
+        toast(`Removed from "${pl.title}"`);
+      } else if (allIn) {
+        toast(`Already in "${pl.title}"`);
+      } else {
+        const n = collection.addTracks(pl.href, listTracks);
+        toast(n === 1 ? `Added to "${pl.title}"` : `Added ${plural(n, 'song')} to "${pl.title}"`);
+      }
+      draw(true);
+      return;
+    }
+
+    busy = true;
+    const svcName = DEST_LABEL[pl.source];
+    toast(`Syncing to "${pl.title}" on ${svcName}…`, { ms: 2000 });
+    try {
+      let added = 0;
+      if (pl.source === 'youtube') added = await youtube.addToPlaylist(pl.id, listTracks);
+      else if (pl.source === 'apple') added = await apple.addToPlaylist(pl.id, listTracks);
+      else if (pl.source === 'spotify') added = await spotify.addToPlaylist(pl.id, listTracks);
+      addedThisOpen.add(pl.href);
+      // If saved locally in Tint too, add locally so saved copies stay fresh.
+      if (collection.find(pl.href)) collection.save({ ...collection.find(pl.href), tracks: [...(collection.find(pl.href).tracks || []), ...listTracks] });
+      toast(added === 1 ? `Added to "${pl.title}" on ${svcName}` : `Added ${plural(added, 'song')} to "${pl.title}" on ${svcName}`);
+    } catch (e) {
+      toast(e?.message || `Couldn't add to "${pl.title}" on ${svcName}.`, { ms: 6000 });
+    } finally {
+      busy = false;
+      draw(true);
+    }
+  }
+
+  async function makeNew(name) {
+    const clean = name.trim();
+    if (!clean || busy) return;
+    if (createDest === 'tint') {
+      const made = collection.createPlaylist(clean, listTracks);
+      if (!made) return;
+      if (adding) {
+        toast(listTracks.length === 1 ? `Created "${made.title}" in Tint and added song` : `Created "${made.title}" with ${plural(listTracks.length, 'song')}`);
+        find.value = '';
+        draw();
+        find.focus();
+      } else {
+        closeMenu();
+        toast(`Created playlist "${made.title}"`);
+        location.hash = made.href;
+      }
+      return;
+    }
+
+    busy = true;
+    if (createBtn) createBtn.disabled = true;
+    const svcName = DEST_LABEL[createDest];
+    toast(`Creating "${clean}" on ${svcName}…`, { ms: 2500 });
+    try {
+      let made = null;
+      if (createDest === 'youtube') made = await youtube.createPlaylist(clean, listTracks);
+      else if (createDest === 'apple') made = await apple.createPlaylist(clean, listTracks);
+      else if (createDest === 'spotify') made = await spotify.createPlaylist(clean, listTracks);
+      if (made) {
+        addedThisOpen.add(made.href);
+        toast(adding ? `Created "${made.title}" on ${svcName} and added songs` : `Created "${made.title}" on ${svcName}`);
+        if (!adding) { closeMenu(); location.hash = made.href; return; }
+      }
+      find.value = '';
+      draw();
+      find.focus();
+    } catch (e) {
+      toast(e?.message || `Couldn't create playlist on ${svcName}.`, { ms: 6000 });
+    } finally {
+      busy = false;
+      if (createBtn) createBtn.disabled = !find.value.trim();
+    }
+  }
+
+  function enter(forceMake = false) {
+    const name = find.value.trim();
+    if (!name) return;
+    if (!adding || forceMake) { makeNew(name); return; }
+    const same = picked();
+    if (same) {
+      toggleIn(same);
+      find.value = '';
+      draw();
+      find.focus();
+    } else {
+      makeNew(name);
+    }
+  }
+
+  function row(pl, isNext = false) {
+    const isTint = pl.source === 'tint';
+    const hasAll = adding && (isTint ? listTracks.every((t) => collection.hasTrack(pl.href, t)) : addedThisOpen.has(pl.href));
+    const hasSome = adding && isTint && !hasAll && listTracks.some((t) => collection.hasTrack(pl.href, t));
+    return h('div', { class: 'tag-row' + (hasAll ? ' is-on' : '') },
+      h('div', { class: 'tag-row-main' },
+        h('button', {
+          class: 'tag-pick' + (isNext ? ' is-next' : ''), dataset: { key: `pl-${pl.source}-${pl.id}` },
+          role: 'menuitemcheckbox', 'aria-checked': hasAll ? 'true' : hasSome ? 'mixed' : 'false',
+          onclick: () => toggleIn(pl),
+        },
+          h('span', { class: 'tag-box', icon: hasAll ? 'check' : null }),
+          h('span', { class: 'pl-thumb' }, pl.art ? cover(pl.art, 28) : h('span', { class: 'pl-thumb-icon', icon: SOURCE_ICON[pl.source] || 'listMusic' })),
+          h('span', { class: 'tag-row-name' }, pl.title),
+          isTint && h('span', { class: 'tag-row-count' }, String(pl.tracks?.length || 0)))));
+  }
+
+  function drawDest() {
+    if (signedDestinations.length <= 1) { fill(destHost); return; }
+    fill(destHost,
+      h('div', { class: 'pl-dest' },
+        h('span', { class: 'pl-dest-lbl' }, `Save to ${DEST_LABEL[createDest]}`),
+        segmented('Create playlist in', signedDestinations, createDest, (v) => { createDest = v; drawDest(); draw(true); }, { iconsOnly: true })));
+  }
+
+  function draw(keepFocus = false) {
+    const key = keepFocus ? document.activeElement?.dataset?.key : null;
+    const q = find.value.trim();
+    if (createBtn) createBtn.disabled = !q || busy;
+    if (!adding) return;
+    const ql = q.toLowerCase();
+    const grouped = groups().map((g) => ({ ...g, items: g.items.filter((p) => p.title.toLowerCase().includes(ql)) })).filter((g) => g.items.length);
+    const making = !!q && !named(q);
+    const next = picked();
+    const rows = [];
+    for (const g of grouped) {
+      rows.push(h('div', { class: 'pl-group-head' },
+        h('span', { class: 'pl-group-icon', icon: g.icon }),
+        h('span', {}, g.label)));
+      for (const p of g.items) rows.push(row(p, p === next));
+    }
+    const where = createDest === 'tint' ? 'in Tint' : `on ${DEST_LABEL[createDest]}`;
+    fill(list,
+      rows,
+      making ? h('div', { class: 'tag-make' },
+        h('button', { class: 'tag-pick' + (rows.length ? '' : ' is-next'), dataset: { key: 'make' }, onclick: () => enter(true) },
+          h('span', { class: 'tag-box', icon: 'plus' }),
+          h('span', { class: 'tag-row-name' }, `Create "${q}" ${where} & add`))) : null,
+      !grouped.length && !q ? h('p', { class: 'quiet tag-panel-hint' }, 'Type a name to create your first playlist.') : null);
+    if (key) list.querySelector(`[data-key="${CSS.escape(key)}"]`)?.focus();
+    if (panel.isConnected) {
+      const r = panel.getBoundingClientRect();
+      if (r.bottom > innerHeight - 8) panel.style.top = Math.max(8, innerHeight - 8 - panel.offsetHeight) + 'px';
+    }
+  }
+
+  const heading = !adding ? 'New playlist'
+    : listTracks.length === 1 ? `Add "${listTracks[0].title}" to…`
+      : `Add ${plural(listTracks.length, 'song')} to…`;
+  drawDest();
+  if (adding) {
+    fill(panel, h('p', { class: 'tag-panel-title' }, heading), find, signedDestinations.length > 1 ? destHost : null, list);
+  } else {
+    fill(panel, h('p', { class: 'tag-panel-title' }, heading), h('div', { class: 'pl-create-row' }, find, createBtn), signedDestinations.length > 1 ? destHost : null);
+  }
+  draw();
+  // Live-refresh as platform playlists finish loading while popover is open.
+  const offs = adding ? [apple.onChange(() => draw(true)), youtube.onChange(() => draw(true)), spotify.onChange(() => draw(true))] : [];
+  showPopover(x, y, panel, { anchor, onClose: () => offs.forEach((off) => off()) });
+  find.focus();
+}
+
+function renamePlaylistPanel(x, y, item) {
+  const panel = h('div', { class: 'tag-panel rename-panel', role: 'dialog', 'aria-label': `Rename ${item.title}` });
+  const input = h('input', {
+    type: 'text', class: 'tag-find', maxLength: 80, value: item.title, spellcheck: false, 'aria-label': 'Playlist name',
+    onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); commit(); } },
+  });
+  function commit() {
+    const clean = input.value.trim();
+    if (!clean) return;
+    if (clean !== item.title) {
+      collection.renamePlaylist(item.href, clean);
+      toast(`Renamed playlist to "${clean}"`);
+    }
+    closeMenu();
+  }
+  fill(panel,
+    h('p', { class: 'tag-panel-title' }, 'Rename playlist'),
+    input,
+    h('div', { class: 'rename-actions' },
+      h('button', { class: 'btn', onclick: closeMenu }, 'Cancel'),
+      h('button', { class: 'btn primary', onclick: commit }, 'Save')));
+  showPopover(x, y, panel);
+  input.focus();
+  input.select();
+}
+
+function trackMenu(x, y, track, { playlistHref = null, playlistSource = null, playlistId = null, onRemoved = null } = {}) {
+  const liked = likes.isLiked(track);
+  const inEditableTint = playlistHref && playlistHref !== collection.LIKED_HREF && collection.isEditable(collection.find(playlistHref));
+  const inEditableRemote = (playlistSource === 'youtube' && youtube.isSignedIn() && playlistId && playlistId !== 'VLLM')
+    || (playlistSource === 'spotify' && spotify.isSignedIn() && playlistId);
   showMenu(x, y, [
-    { label: 'Play next', run: () => { player.playNext([track]); toast(`"${track.title}" plays next`); } },
-    { label: 'Add to queue', run: () => { player.addToQueue([track]); toast(`Added "${track.title}" to the queue`); } },
-    track.artist && { label: 'Go to artist', run: () => { location.hash = artistHref(track); } },
-    track.albumHref && { label: 'Go to album', run: () => { location.hash = track.albumHref; } },
-    { label: 'Copy title', run: () => copyText(track.title, 'Title copied') },
-    { label: 'Share YouTube Music link', run: () => youtube.share(track) },
+    {
+      icon: liked ? 'heartFilled' : 'heart',
+      label: liked ? 'Remove from Liked songs' : 'Like',
+      active: liked,
+      run: () => runLike(track),
+    },
+    { icon: 'listPlus', label: 'Add to playlist…', run: () => playlistPanel(x, y, [track]) },
+    (inEditableTint || inEditableRemote) && {
+      icon: 'trash',
+      label: inEditableRemote ? `Remove from ${SOURCE_LABEL[playlistSource]} playlist` : 'Remove from playlist',
+      danger: true,
+      run: async () => {
+        if (inEditableTint) {
+          collection.removeTrack(playlistHref, track.id);
+          toast(`Removed "${track.title}" from playlist`);
+          return;
+        }
+        try {
+          if (playlistSource === 'youtube') await youtube.removeFromPlaylist(playlistId, track);
+          else if (playlistSource === 'spotify') await spotify.removeFromPlaylist(playlistId, track);
+          toast(`Removed "${track.title}" from ${SOURCE_LABEL[playlistSource]} playlist`);
+          onRemoved?.(track);
+        } catch (e) {
+          toast(e?.message || "Couldn't remove from playlist.", { ms: 5000 });
+        }
+      },
+    },
+    { sep: true },
+    { icon: 'listStart', label: 'Play next', run: () => { player.playNext([track]); toast(`"${track.title}" plays next`); } },
+    { icon: 'listEnd', label: 'Add to queue', run: () => { player.addToQueue([track]); toast(`Added "${track.title}" to the queue`); } },
+    { sep: true },
+    track.artist && { icon: 'user', label: 'Go to artist', run: () => { location.hash = artistHref(track); } },
+    track.albumHref && { icon: 'disc', label: 'Go to album', run: () => { location.hash = track.albumHref; } },
+    { icon: 'copy', label: 'Copy title', run: () => copyText(track.title, 'Title copied') },
+    { icon: 'share', label: 'Share YouTube Music link', run: () => youtube.share(track) },
   ]);
 }
 
-function trackRow(tracks, i, { numbered = false, showAlbum = true, albumArtist = null } = {}) {
+function trackRow(tracks, i, { numbered = false, showAlbum = true, albumArtist = null, showSource = false, playlistHref = null, playlistSource = null, playlistId = null, onRemoved = null } = {}) {
   const track = tracks[i];
   const isCurrent = player.current()?.id === track.id;
+  const liked = likes.isLiked(track);
   const play = () => {
     if (track.playable === false) return toast(track.reason || "This song can't be played.");
     player.playList(tracks, i);
@@ -101,9 +540,9 @@ function trackRow(tracks, i, { numbered = false, showAlbum = true, albumArtist =
     role: 'listitem',
     tabIndex: 0,
     title: track.playable === false ? track.reason : null,
-    onclick: (e) => { if (!e.target.closest('.row-more')) play(); },
+    onclick: (e) => { if (!e.target.closest('.row-more, .row-like')) play(); },
     onkeydown: (e) => { if (e.key === 'Enter' && e.target === e.currentTarget) play(); },
-    oncontextmenu: (e) => { e.preventDefault(); trackMenu(e.clientX, e.clientY, track); },
+    oncontextmenu: (e) => { e.preventDefault(); trackMenu(e.clientX, e.clientY, track, { playlistHref, playlistSource, playlistId, onRemoved }); },
   },
     h('span', { class: 'row-lead' }, lead),
     h('span', { class: 'row-main' },
@@ -113,15 +552,21 @@ function trackRow(tracks, i, { numbered = false, showAlbum = true, albumArtist =
       // On an album page the artist is in the heading; only guests need naming on the rows.
       track.artist !== albumArtist && h('span', { class: 'row-sub' }, track.artist)),
     showAlbum && h('span', { class: 'row-album' }, track.album),
+    showSource && SOURCE_ICON[track.source] && h('span', { class: 'row-source', icon: SOURCE_ICON[track.source], title: SOURCE_LABEL[track.source] }),
+    h('button', {
+      class: 'icon-btn small row-like' + (liked ? ' is-liked' : ''),
+      icon: liked ? 'heartFilled' : 'heart',
+      'aria-label': liked ? `Unlike ${track.title}` : `Like ${track.title}`,
+      'aria-pressed': String(liked),
+      title: liked ? 'Remove from Liked songs' : 'Like',
+      onclick: (e) => { e.stopPropagation(); runLike(track); },
+    }),
     h('span', { class: 'row-time' }, track.duration ? fmtTime(track.duration) : ''),
     h('button', {
       class: 'icon-btn small row-more', icon: 'more', 'aria-label': `More for ${track.title}`, title: 'More',
-      onclick: (e) => { const r = e.currentTarget.getBoundingClientRect(); trackMenu(r.right - 180, r.bottom + 4, track); },
+      onclick: (e) => { const r = e.currentTarget.getBoundingClientRect(); trackMenu(r.right - 200, r.bottom + 4, track, { playlistHref, playlistSource, playlistId, onRemoved }); },
     }));
 }
-
-// Set while a page swaps a kept copy for the service's newer answer, so nothing on it fades in again.
-let calmDraw = false;
 
 /**
  * A track list. Only the rows on screen (and a few either side) exist at any time, however long it
@@ -130,18 +575,13 @@ let calmDraw = false;
 function trackList(scroller, tracks, options = {}) {
   const only = options.only || null;
   const count = only ? only.length : tracks.length;
-  // Each song fades in the first time it comes into view. Redrawn rows (a new song started, or the
-  // list moving its window) that were already seen stay put.
-  const seen = new Set(calmDraw ? Array.from({ length: count }, (_, i) => i) : []);
-  const row = (i) => {
-    const el = trackRow(tracks, only ? only[i] : i, options);
-    return seen.has(i) ? el : fadeInWhenSeen(el, () => seen.add(i));
-  };
+  const row = (i) => trackRow(tracks, only ? only[i] : i, options);
   const list = new VirtualList({ scroller, rowHeight: ROW, count, className: 'tracks', render: row });
   return { el: list.el, refresh: () => list.refresh(), destroy: () => list.destroy() };
 }
 
 async function tracksOf(item) {
+  if (item.href === likes.LIKED_HREF) return likes.merged().tracks;
   if (item.source === 'tint') return collection.find(item.href)?.tracks || item.tracks || [];
   const saved = collection.find(item.href);
   if (item.tracks && !saved) return item.tracks;
@@ -149,7 +589,7 @@ async function tracksOf(item) {
   if (item.href.includes('#/playlist/') && saved?.tracks?.length) return saved.tracks;
   pagecache.used(item.href);
   const isPlaylist = item.href.includes('#/playlist/');
-  const from = item.source === 'youtube' ? youtube : apple;
+  const from = item.source === 'youtube' ? youtube : item.source === 'spotify' ? spotify : apple;
   const live = (isPlaylist ? from.playlist(item.id) : from.album(item.id)).then((detail) => {
     pagecache.keep(item.href, isPlaylist ? { ...detail, href: item.href } : detail);
     return detail.tracks;
@@ -180,6 +620,7 @@ function card(item) {
     }
   };
   const isPlaylist = item.href.includes('#/playlist/');
+  const isArtist = item.href.includes('#/artist/');
   const saved = isPlaylist ? collection.find(item.href) : null;
   const marks = collection.tagsOf(saved);
   // The pin shows on hover, and stays while the playlist is pinned. Pinning saves it first.
@@ -199,27 +640,60 @@ function card(item) {
   };
   const el = h('a', {
     class: 'card', href: item.href, title: item.title,
-    oncontextmenu: isPlaylist ? (e) => { e.preventDefault(); playlistMenu(e.clientX, e.clientY, item); } : null,
+    oncontextmenu: (e) => {
+      e.preventDefault();
+      if (isPlaylist) playlistMenu(e.clientX, e.clientY, item);
+      else if (isArtist) artistCardMenu(e.clientX, e.clientY, item);
+      else albumCardMenu(e.clientX, e.clientY, item);
+    },
     // On the Playlists page a playlist can be picked up and dropped on a tag to be given it.
     draggable: false,
     onpointerdown: isPlaylist ? (e) => liftPlaylist(e, item, el) : null,
   },
     h('span', { class: 'card-art' },
-      cover(item.art, 200),
+      isPlaylist ? playlistArt(item, 200) : cover(item.art, 200),
       isPlaylist && h('button', {
         class: 'card-pin' + (saved?.pinned ? ' is-pinned' : ''), icon: 'pin',
         title: saved?.pinned ? 'Unpin' : 'Pin to the top', 'aria-label': `${saved?.pinned ? 'Unpin' : 'Pin'} ${item.title}`,
         'aria-pressed': String(!!saved?.pinned), onclick: pinIt,
       }),
-      item.href.includes('#/artist/') ? null : h('button', { class: 'card-play', icon: 'play', 'aria-label': `Play ${item.title}`, onclick: playIt })),
+      isArtist ? null : h('button', { class: 'card-play', icon: 'play', 'aria-label': `Play ${item.title}`, onclick: playIt })),
     h('span', { class: 'card-title' }, item.title),
     item.artist && h('span', { class: 'card-sub' }, item.artist),
     marks.length ? h('button', { class: 'card-tags', title: 'Change the tags', 'aria-label': `Tags of ${item.title}`, onclick: openTags }, marks.map(tagLabel)) : null);
-  // Each card glides in the first time it comes into view, and stays still when a page redraws.
-  return cardsSeen.has(item.href) ? el : fadeInWhenSeen(el, () => cardsSeen.add(item.href));
+  return el;
 }
 
-const cardsSeen = new Set();
+async function runCardTracks(item, action) {
+  try {
+    const tracks = await tracksOf(item);
+    if (!tracks.length) return toast('Nothing in there to play.');
+    action(tracks);
+  } catch (err) {
+    toast(err?.message || "That couldn't be loaded.");
+  }
+}
+
+function albumCardMenu(x, y, item) {
+  showMenu(x, y, [
+    { icon: 'play', label: 'Play', run: () => runCardTracks(item, (tracks) => player.playList(tracks, 0, { shuffle: false })) },
+    { icon: 'shuffle', label: 'Shuffle', run: () => runCardTracks(item, (tracks) => player.playList(tracks, 0, { shuffle: true })) },
+    { sep: true },
+    { icon: 'listPlus', label: 'Add to playlist…', run: () => runCardTracks(item, (tracks) => playlistPanel(x, y, tracks)) },
+    { icon: 'listStart', label: 'Play next', run: () => runCardTracks(item, (tracks) => { player.playNext(tracks); toast(`"${item.title}" plays next`); }) },
+    { icon: 'listEnd', label: 'Add to queue', run: () => runCardTracks(item, (tracks) => { player.addToQueue(tracks); toast(`Added "${item.title}" to the queue`); }) },
+    { sep: true },
+    item.artist && { icon: 'user', label: 'Go to artist', run: () => { location.hash = artistHref(item); } },
+    { icon: 'copy', label: 'Copy title', run: () => copyText(item.title, 'Title copied') },
+  ]);
+}
+
+function artistCardMenu(x, y, item) {
+  showMenu(x, y, [
+    { icon: 'user', label: 'Open artist', run: () => { location.hash = item.href; } },
+    { icon: 'copy', label: 'Copy name', run: () => copyText(item.title, 'Artist name copied') },
+  ]);
+}
 
 // ---- saved playlists, pins and tags -------------------------------------------------------------
 
@@ -232,12 +706,29 @@ function tagged(el, color) {
 const tagLabel = (t) => tagged(h('span', { class: 'tag-label' }, h('span', { class: 'tag-dot' }), t.name), t.color);
 const nextColor = (color) => collection.COLORS[(collection.COLORS.indexOf(color) + 1) % collection.COLORS.length];
 
-/** Saves a playlist in Tint with its songs. Returns the saved copy, or null when it couldn't be. */
+/** Whether a playlist currently lives in its source platform's library (Apple, YouTube, Spotify). */
+function inPlatformLibrary(item) {
+  if (!item?.id) return false;
+  if (item.source === 'spotify' && spotify.isSignedIn()) return spotify.libraryPlaylists().items.some((p) => p.id === item.id);
+  if (item.source === 'youtube' && youtube.isSignedIn()) return youtube.libraryPlaylists().items.some((p) => p.id === item.id || p.id.replace(/^VL/, '') === item.id.replace(/^VL/, ''));
+  if (item.source === 'apple' && apple.isSignedIn()) return apple.libraryPlaylists().items.some((p) => p.id === item.id);
+  return false;
+}
+
+/** Saves a playlist in Tint with its songs, and follows/saves it on its source platform when signed in. */
 async function saveInTint(item, quiet = false) {
   try {
     const tracks = item.tracks || await tracksOf(item);
     collection.save({ ...item, tracks });
-    if (!quiet) toast(`Saved "${item.title}" in Tint`);
+    let synced = null;
+    if (!inPlatformLibrary(item)) {
+      try {
+        if (item.source === 'spotify' && spotify.isSignedIn()) { await spotify.savePlaylist(item.id); synced = 'Spotify'; }
+        else if (item.source === 'youtube' && youtube.isSignedIn()) { await youtube.savePlaylist(item.id); synced = 'YouTube Music'; }
+        else if (item.source === 'apple' && apple.isSignedIn()) { await apple.savePlaylist(item.id); synced = 'Apple Music'; }
+      } catch { /* keep Tint save even if platform follow failed */ }
+    }
+    if (!quiet) toast(synced ? `Saved "${item.title}" in Tint & ${synced}` : `Saved "${item.title}" in Tint`);
     return collection.find(item.href);
   } catch (e) {
     toast(e?.message || "That playlist couldn't be saved.");
@@ -245,21 +736,80 @@ async function saveInTint(item, quiet = false) {
   }
 }
 
-/** What can be done with a saved playlist: pin it, tag it, or let it go. */
+/** Removes a playlist from its source platform library and removes any saved copy in Tint. */
+async function removeFromPlatform(item) {
+  const svcName = SOURCE_LABEL[item.source];
+  try {
+    if (item.source === 'spotify') await spotify.removePlaylist(item.id);
+    else if (item.source === 'youtube') await youtube.removePlaylist(item.id);
+    else if (item.source === 'apple') await apple.removePlaylist(item.id);
+    if (collection.find(item.href)) collection.remove(item.href);
+    toast(`Removed "${item.title}" from ${svcName}`);
+    if (location.hash === item.href) location.hash = '#/playlists';
+  } catch (e) {
+    toast(e?.message || `Couldn't remove "${item.title}" from ${svcName}.`, { ms: 6000 });
+  }
+}
+
+/** What can be done with a saved playlist: pin it, tag it, rename it, or remove it. */
 function savedMenuItems(x, y, saved) {
+  const isCustom = saved.source === 'tint' && saved.href !== collection.LIKED_HREF;
+  const isLiked = saved.href === collection.LIKED_HREF;
+  const onPlatform = inPlatformLibrary(saved);
   return [
-    { label: saved.pinned ? 'Unpin' : 'Pin to the top', run: () => collection.setPinned(saved.href, !saved.pinned) },
-    { label: 'Tags…', run: () => tagPanel(x, y, saved.href) },
-    { label: 'Remove from Tint', run: () => { collection.remove(saved.href); toast(`Removed "${saved.title}" from Tint`); } },
+    { icon: 'pin', label: saved.pinned ? 'Unpin' : 'Pin to the top', active: !!saved.pinned, run: () => collection.setPinned(saved.href, !saved.pinned) },
+    { icon: 'tag', label: 'Tags…', run: () => tagPanel(x, y, saved.href) },
+    isCustom && { icon: 'pen', label: 'Rename…', run: () => renamePlaylistPanel(x, y, saved) },
+    {
+      icon: 'trash',
+      label: isLiked ? 'Clear Liked songs' : isCustom ? 'Delete playlist' : 'Remove from Tint',
+      danger: true,
+      run: () => {
+        collection.remove(saved.href);
+        toast(isLiked ? 'Cleared Liked songs' : isCustom ? `Deleted "${saved.title}"` : `Removed "${saved.title}" from Tint`);
+      },
+    },
+    onPlatform && {
+      icon: 'trash',
+      label: `Remove from ${SOURCE_LABEL[saved.source]}`,
+      danger: true,
+      run: () => removeFromPlatform(saved),
+    },
   ];
 }
 
 function playlistMenu(x, y, item) {
+  if (item.href === likes.LIKED_HREF) {
+    showMenu(x, y, [
+      { icon: 'play', label: 'Play', run: () => runCardTracks(item, (tracks) => player.playList(tracks, 0, { shuffle: false })) },
+      { icon: 'shuffle', label: 'Shuffle', run: () => runCardTracks(item, (tracks) => player.playList(tracks, 0, { shuffle: true })) },
+      { sep: true },
+      { icon: 'listStart', label: 'Play next', run: () => runCardTracks(item, (tracks) => { player.playNext(tracks); toast('"Liked songs" plays next'); }) },
+      { icon: 'listEnd', label: 'Add to queue', run: () => runCardTracks(item, (tracks) => { player.addToQueue(tracks); toast('Added "Liked songs" to the queue'); }) },
+      { sep: true },
+      { icon: 'copy', label: 'Copy title', run: () => copyText(item.title, 'Title copied') },
+    ]);
+    return;
+  }
   const saved = collection.find(item.href);
-  showMenu(x, y, saved ? savedMenuItems(x, y, saved) : [
-    { label: 'Save in Tint', run: () => saveInTint(item) },
-    { label: 'Pin to the top', run: async () => { if (await saveInTint(item, true)) collection.setPinned(item.href, true); } },
-    { label: 'Tags…', run: async () => { if (await saveInTint(item, true)) tagPanel(x, y, item.href); } },
+  const onPlatform = !saved && inPlatformLibrary(item);
+  showMenu(x, y, [
+    { icon: 'play', label: 'Play', run: () => runCardTracks(item, (tracks) => player.playList(tracks, 0, { shuffle: false })) },
+    { icon: 'shuffle', label: 'Shuffle', run: () => runCardTracks(item, (tracks) => player.playList(tracks, 0, { shuffle: true })) },
+    { sep: true },
+    ...(saved ? savedMenuItems(x, y, saved) : [
+      { icon: 'bookmark', label: 'Save in Tint', run: () => saveInTint(item) },
+      { icon: 'pin', label: 'Pin to the top', run: async () => { if (await saveInTint(item, true)) collection.setPinned(item.href, true); } },
+      { icon: 'tag', label: 'Tags…', run: async () => { if (await saveInTint(item, true)) tagPanel(x, y, item.href); } },
+      onPlatform && {
+        icon: 'trash',
+        label: `Remove from ${SOURCE_LABEL[item.source]}`,
+        danger: true,
+        run: () => removeFromPlatform(item),
+      },
+    ]),
+    { sep: true },
+    { icon: 'copy', label: 'Copy title', run: () => copyText(item.title, 'Title copied') },
   ]);
 }
 
@@ -600,12 +1150,11 @@ function drawSaveArea(area) {
   fill(area,
     h('button', {
       class: 'btn' + (saved ? ' is-saved' : ''),
-      title: saved ? 'Saved in Tint. Pin it or tag it' : 'Keep this playlist in Tint',
-      onclick: (e) => {
+      title: saved ? 'Saved in Tint. Pin it, tag it, or remove it' : 'Keep this playlist in Tint and sync to its service',
+      onclick: async (e) => {
         const now = collection.find(playlist.href);
         if (!now) {
-          collection.save(playlist);
-          toast(`Saved "${playlist.title}" in Tint`);
+          await saveInTint(playlist);
           return;
         }
         const r = e.currentTarget.getBoundingClientRect();
@@ -645,7 +1194,7 @@ async function liveOrSaved(href, fetching) {
 }
 
 /** The tags above the playlists: one narrows the page to it, and takes a playlist dropped on it. */
-function tagFilter(all, current, onPick) {
+function tagFilter(all, current, onPick, trailing = null) {
   return h('div', { class: 'tag-filter', role: 'group', 'aria-label': 'Show playlists tagged' },
     all.length ? h('button', { class: 'tag-chip', 'aria-pressed': String(!current), onclick: () => onPick(null) }, 'Any tag') : null,
     all.map((t) => tagged(h('button', {
@@ -655,7 +1204,8 @@ function tagFilter(all, current, onPick) {
     h('button', {
       class: 'tag-chip tag-chip-edit', title: 'Make, rename, recolour or delete tags',
       onclick: (e) => { const r = e.currentTarget.getBoundingClientRect(); tagPanel(r.left, r.bottom + 6, null); },
-    }, h('span', { class: 'tag-add-icon', icon: all.length ? 'pen' : 'plus' }), all.length ? 'Edit tags' : 'Make a tag'));
+    }, h('span', { class: 'tag-add-icon', icon: all.length ? 'pen' : 'plus' }), all.length ? 'Edit tags' : 'Make a tag'),
+    trailing);
 }
 
 /** A grid of covers. Only the rows of it on screen exist at any time, however many it holds. */
@@ -778,21 +1328,33 @@ function shelf(title, items) {
 
 /** Where music can be shown from: everything, this PC, and each service that is signed in. */
 function sources() {
-  return [['all', 'All'], ['local', 'On this PC'],
-    apple.isSignedIn() && ['apple', 'Apple Music'],
-    youtube.isSignedIn() && ['youtube', 'YouTube Music']].filter(Boolean);
+  return [
+    ['all', 'All', 'grid'],
+    ['local', 'On this PC', 'pc'],
+    apple.isSignedIn() && ['apple', 'Apple Music', 'appleMono'],
+    youtube.isSignedIn() && ['youtube', 'YouTube Music', 'youtubeMono'],
+    spotify.isSignedIn() && ['spotify', 'Spotify', 'spotifyMono'],
+  ].filter(Boolean);
 }
 
 /** One kind of thing (albums, songs) from this PC and from each signed-in library, narrowed to the chosen source. */
-function gather(wanted, mine, fromApple, fromYouTube) {
+function gather(wanted, mine, fromApple, fromYouTube, fromSpotify) {
   const choices = sources();
   const source = choices.some(([id]) => id === wanted) ? wanted : 'all';
-  const parts = { apple: apple.isSignedIn() ? fromApple() : null, youtube: youtube.isSignedIn() ? fromYouTube() : null };
+  const parts = {
+    apple: apple.isSignedIn() ? fromApple() : null,
+    youtube: youtube.isSignedIn() ? fromYouTube() : null,
+    spotify: spotify.isSignedIn() && fromSpotify ? fromSpotify() : null,
+  };
   let items = source === 'all' || source === 'local' ? mine.slice() : [];
   for (const [name, part] of Object.entries(parts)) {
     if (part && (source === 'all' || source === name)) items = items.concat(part.items);
   }
-  const notes = [libraryNote('Apple Music', parts.apple), libraryNote('YouTube Music', parts.youtube)].filter(Boolean);
+  const notes = [
+    libraryNote('Apple Music', parts.apple),
+    libraryNote('YouTube Music', parts.youtube),
+    libraryNote('Spotify', parts.spotify),
+  ].filter(Boolean);
   return { items, source, choices, notes, remote: choices.length > 2 };
 }
 
@@ -805,7 +1367,7 @@ function libraryNote(name, part) {
 function nothingYet() {
   if (local.scanning) return emptyState('Looking through your music folders…', 'Songs appear here as they are found.');
   return emptyState('No music here yet',
-    'Add a folder that holds your music, or connect Apple Music to bring in your library.',
+    'Add a folder that holds your music, or connect Apple Music, YouTube Music or Spotify to bring in your library.',
     linkButton('Open settings', '#/settings', 'primary'));
 }
 
@@ -815,7 +1377,7 @@ function albumsView() {
   const el = h('section', { class: 'page' });
 
   function draw() {
-    const { items: found, source, choices, notes, remote } = gather(memory.albumSource, local.albums, apple.libraryAlbums, youtube.libraryAlbums);
+    const { items: found, source, choices, notes, remote } = gather(memory.albumSource, local.albums, apple.libraryAlbums, youtube.libraryAlbums, spotify.libraryAlbums);
     const items = source === 'all' && remote ? withoutDoubles(found) : found;
 
     const sort = memory.albumSort;
@@ -825,7 +1387,7 @@ function albumsView() {
 
     fill(el,
       pageHead('Albums', [plural(items.length, 'album'), ...notes].join('. '),
-        remote && segmented('Show albums from', choices, source, (v) => { memory.albumSource = v; draw(); }),
+        remote && segmented('Show albums from', choices, source, (v) => { memory.albumSource = v; draw(); }, { iconsOnly: true }),
         select('Sort albums by', [['artist', 'By artist'], ['title', 'By title'], ['recent', 'Recently added']], sort, (v) => { memory.albumSort = v; draw(); })),
       items.length ? grid(items) : nothingYet());
   }
@@ -853,7 +1415,7 @@ function songsView({ scroller }) {
   let shown = [];
 
   function collect() {
-    const { items, source, choices, notes, remote } = gather(memory.songSource, local.tracks, apple.librarySongs, youtube.librarySongs);
+    const { items, source, choices, notes, remote } = gather(memory.songSource, local.tracks, apple.librarySongs, youtube.librarySongs, spotify.librarySongs);
     const sort = memory.songSort;
     items.sort(sort === 'title' ? (a, b) => compareText(a.title, b.title)
       : sort === 'recent' ? (a, b) => (b.added || 0) - (a.added || 0)
@@ -869,7 +1431,7 @@ function songsView({ scroller }) {
     fill(el,
       pageHead('Songs', [plural(items.length, 'song'), ...notes].join('. '),
         items.length > 1 && button('Shuffle all', () => player.playList(shown, 0, { shuffle: true })),
-        remote && segmented('Show songs from', choices, source, (v) => { memory.songSource = v; draw(); }),
+        remote && segmented('Show songs from', choices, source, (v) => { memory.songSource = v; draw(); }, { iconsOnly: true }),
         select('Sort songs by', [['artist', 'By artist'], ['title', 'By title'], ['recent', 'Recently added']], sort, (v) => { memory.songSort = v; draw(); })),
       list ? list.el : nothingYet());
   }
@@ -898,24 +1460,39 @@ function connectPrompt(title) {
 function playlistsView() {
   const el = h('section', { class: 'page' });
   function draw() {
+    const openNewPlaylist = (e) => {
+      const r = e.currentTarget.getBoundingClientRect();
+      playlistPanel(r.right - 312, r.bottom + 6, null, { anchor: r });
+    };
     const parts = [
       apple.isSignedIn() && ['Apple Music', apple.libraryPlaylists()],
       youtube.isSignedIn() && ['YouTube Music', youtube.libraryPlaylists()],
+      spotify.isSignedIn() && ['Spotify', spotify.libraryPlaylists()],
     ].filter(Boolean);
-    const saved = collection.items();
+    const unifiedLiked = likes.likedCard();
+    const savedRaw = collection.items().filter((item) => item.href !== likes.LIKED_HREF);
+    const saved = unifiedLiked ? [unifiedLiked, ...savedRaw] : savedRaw;
     if (!parts.length && !saved.length) {
-      fill(el, pageHead('Playlists'), connectPrompt('Your playlists live in Apple Music and YouTube Music'),
-        h('p', { class: 'quiet' }, 'Or paste a YouTube or Spotify playlist link in the search box to open it and save it here.'));
+      const newPlaylistBtn = h('button', { class: 'btn', onclick: openNewPlaylist },
+        h('span', { class: 'btn-icon', icon: 'plus' }), 'New playlist');
+      fill(el, pageHead('Playlists', null, newPlaylistBtn), connectPrompt('Your playlists live in Apple Music, YouTube Music and Spotify'),
+        h('p', { class: 'quiet' }, 'Or make a playlist in Tint above, like any song, or paste a YouTube or Spotify playlist link in the search box.'));
       return;
     }
     // The list can be narrowed to the playlists saved in Tint, or to one service's.
-    const choices = [['all', 'All'], saved.length && ['saved', 'Saved in Tint'], ...parts.map(([name]) => [name, name])].filter(Boolean);
+    const serviceIcon = { 'Apple Music': 'appleMono', 'YouTube Music': 'youtubeMono', Spotify: 'spotifyMono' };
+    const choices = [
+      ['all', 'All', 'grid'],
+      saved.length && ['saved', 'Saved in Tint', 'bookmark'],
+      ...parts.map(([name]) => [name, name, serviceIcon[name] || 'grid']),
+    ].filter(Boolean);
     const source = choices.some(([id]) => id === memory.playlistSource) ? memory.playlistSource : 'all';
     // A saved playlist stands in for the same one in a service's library, so it shows once.
     const savedHere = new Set(saved.map((item) => item.href));
     let items = [
       ...(source === 'all' || source === 'saved' ? saved : []),
       ...parts.filter(([name]) => source === 'all' || source === name).flatMap(([, part]) => part.items)
+        .filter((item) => !likes.isPlatformLikedPlaylist(item))
         .filter((item) => source !== 'all' || !savedHere.has(item.href)),
     ];
     const allTags = collection.tags();
@@ -923,23 +1500,29 @@ function playlistsView() {
     if (tagWanted) items = items.filter((item) => collection.find(item.href)?.tags?.includes(tagWanted));
     items.sort((a, b) => compareText(a.title, b.title));
     // Pinned playlists come first, in the order they were pinned.
-    const pinnedAt = (item) => collection.find(item.href)?.pinnedAt || 0;
-    const pinned = items.filter((item) => collection.find(item.href)?.pinned).sort((a, b) => pinnedAt(a) - pinnedAt(b));
+    const isPinned = (item) => (item.href === likes.LIKED_HREF ? item.pinned : !!collection.find(item.href)?.pinned);
+    const pinnedAt = (item) => (item.href === likes.LIKED_HREF ? (item.pinnedAt || 1) : (collection.find(item.href)?.pinnedAt || 0));
+    const pinned = items.filter(isPinned).sort((a, b) => pinnedAt(a) - pinnedAt(b));
     const rest = items.filter((item) => !pinned.includes(item));
 
     const notes = parts.map(([name, part]) => libraryNote(name, part)).filter(Boolean);
     const waiting = parts.some(([, part]) => part.state === 'idle' || part.state === 'loading');
-    const section = (title, body) => h('section', { class: 'shelf' }, h('h2', {}, title), body);
+    const ordered = [...pinned, ...rest];
     let body;
-    if (pinned.length) body = [section('Pinned', grid(pinned)), rest.length ? section('Everything else', grid(rest)) : null];
-    else if (rest.length) body = grid(rest);
+    if (ordered.length) body = grid(ordered);
     else if (tagWanted) body = emptyState(`Nothing tagged "${collection.tag(tagWanted).name}"`, 'Drag a playlist onto this tag above, or right-click it and choose Tags….');
     else if (waiting) body = loading();
-    else body = emptyState('No playlists yet', 'Playlists you make in Apple Music or YouTube Music, or save in Tint, show up here. Paste a YouTube or Spotify playlist link in the search box to open one.');
+    else body = emptyState('No playlists yet', 'Playlists you make in Apple Music, Spotify or YouTube Music, or save in Tint, show up here. Paste a YouTube or Spotify playlist link in the search box to open one.');
+    const showFilterBar = !!(allTags.length || items.length);
+    const newPlaylistBtn = h('button', {
+      class: showFilterBar ? 'btn tag-filter-end' : 'btn',
+      onclick: openNewPlaylist,
+    }, h('span', { class: 'btn-icon', icon: 'plus' }), 'New playlist');
     fill(el,
       pageHead('Playlists', [plural(items.length, 'playlist'), ...notes].join('. '),
-        choices.length > 2 && segmented('Show playlists from', choices, source, (v) => { memory.playlistSource = v; draw(); })),
-      allTags.length || items.length ? tagFilter(allTags, tagWanted, (id) => { memory.playlistTag = id; draw(); }) : null,
+        !showFilterBar && newPlaylistBtn,
+        choices.length > 2 && segmented('Show playlists from', choices, source, (v) => { memory.playlistSource = v; draw(); }, { iconsOnly: true })),
+      showFilterBar ? tagFilter(allTags, tagWanted, (id) => { memory.playlistTag = id; draw(); }, newPlaylistBtn) : null,
       body);
   }
   draw();
@@ -962,7 +1545,9 @@ function startView({ scroller }) {
   function draw() {
     parts.forEach((p) => p.destroy());
     parts = [];
-    const saved = collection.items();
+    const unifiedLiked = likes.likedCard();
+    const savedRaw = collection.items().filter((item) => item.href !== likes.LIKED_HREF);
+    const saved = unifiedLiked ? [unifiedLiked, ...savedRaw] : savedRaw;
     const pinned = saved.filter((item) => item.pinned).sort((a, b) => (a.pinnedAt || 0) - (b.pinnedAt || 0));
     const lately = saved.filter((item) => !item.pinned).sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0)).slice(0, 14);
     const played = history.songs().slice(0, 8);
@@ -994,7 +1579,7 @@ function startView({ scroller }) {
     refresh: (why) => {
       // A new song only redraws the page when it changes what was played lately.
       if (why === 'track' && history.songs()[0]?.id === firstPlayed) parts.forEach((p) => p.refresh());
-      else if (why === 'track' || why === 'collection' || why === 'local') draw();
+      else if (why === 'track' || why === 'collection' || why === 'local' || why === 'apple' || why === 'youtube' || why === 'spotify') draw();
     },
     destroy: () => parts.forEach((p) => p.destroy()),
   };
@@ -1032,11 +1617,12 @@ function homeView() {
 
 // ---- Album, playlist ----------------------------------------------------------------------------
 
-function detailHead({ art, kind, title, byline, bylineHref, facts, description, tracks, saveAs, extra }) {
+function detailHead({ art, artEl, kind, title, byline, bylineHref, facts, description, tracks, saveAs, extra, extraMenu }) {
   const playable = tracks.filter((t) => t.playable !== false);
   const save = saveAs && saveArea(saveAs);
+  const moreDisabled = !playable.length && !extraMenu?.length;
   return h('header', { class: 'detail-head' },
-    h('div', { class: 'detail-art' }, cover(art, 240, { lazy: false })),
+    h('div', { class: 'detail-art' }, artEl || cover(art, 240, { lazy: false })),
     h('div', { class: 'detail-text' },
       h('p', { class: 'quiet' }, kind),
       h('h1', { class: title.length > 38 ? 'is-long' : '' }, title),
@@ -1052,14 +1638,18 @@ function detailHead({ art, kind, title, byline, bylineHref, facts, description, 
         save,
         extra,
         h('button', {
-          class: 'icon-btn', icon: 'more', 'aria-label': 'More', title: 'More', disabled: !playable.length,
+          class: 'icon-btn', icon: 'more', 'aria-label': 'More', title: 'More', disabled: moreDisabled,
           onclick: (e) => {
             const r = e.currentTarget.getBoundingClientRect();
-            showMenu(r.left, r.bottom + 4, [
-              { label: 'Play next', run: () => { player.playNext(tracks); toast(`"${title}" plays next`); } },
-              { label: 'Add to queue', run: () => { player.addToQueue(tracks); toast(`Added "${title}" to the queue`); } },
-              { label: 'Copy title', run: () => copyText(title, 'Title copied') },
-            ]);
+            const items = [
+              playable.length && { icon: 'listPlus', label: 'Add all to playlist…', run: () => playlistPanel(r.left, r.bottom + 4, playable) },
+              playable.length && { icon: 'listStart', label: 'Play next', run: () => { player.playNext(tracks); toast(`"${title}" plays next`); } },
+              playable.length && { icon: 'listEnd', label: 'Add to queue', run: () => { player.addToQueue(tracks); toast(`Added "${title}" to the queue`); } },
+              playable.length && { sep: true },
+              { icon: 'copy', label: 'Copy title', run: () => copyText(title, 'Title copied') },
+              ...(extraMenu ? [{ sep: true }, ...extraMenu(r)] : []),
+            ];
+            showMenu(r.left, r.bottom + 4, items);
           },
         }))));
 }
@@ -1112,7 +1702,7 @@ function localAlbumView({ scroller, params }) {
   draw();
   return {
     el,
-    refresh: (why) => { if (why === 'track') parts.forEach((p) => p.refresh()); else if (why === 'local') draw(); },
+    refresh: (why) => { if (why === 'track' || why === 'collection') parts.forEach((p) => p.refresh()); else if (why === 'local') draw(); },
     destroy: () => parts.forEach((p) => p.destroy()),
   };
 }
@@ -1158,16 +1748,11 @@ function asyncView(fetcher, build, { needsApple = true, cacheKey = null, waiting
 
   function show(data, animate) {
     parts.forEach((p) => p.destroy());
-    calmDraw = !animate;
-    try {
-      const built = build(data);
-      parts = built.parts || [];
-      fill(el, ...built.nodes);
-      // A quiet swap draws its rows now rather than a frame later, so the list never shows empty.
-      if (!animate) parts.forEach((p) => p.refresh());
-    } finally {
-      calmDraw = false;
-    }
+    const built = build(data);
+    parts = built.parts || [];
+    fill(el, ...built.nodes);
+    // A quiet swap draws its rows now rather than a frame later, so the list never shows empty.
+    if (!animate) parts.forEach((p) => p.refresh());
     if (!animate) return;
     settledAt = performance.now() + 900;
     if (el.querySelector('.detail-head')) opening(el);
@@ -1204,7 +1789,7 @@ function asyncView(fetcher, build, { needsApple = true, cacheKey = null, waiting
   run();
   return {
     el,
-    refresh: (why) => { if (why === 'track') parts.forEach((p) => p.refresh()); },
+    refresh: (why) => { if (why === 'track' || why === 'collection') parts.forEach((p) => p.refresh()); },
     destroy: () => { alive = false; parts.forEach((p) => p.destroy()); },
   };
 }
@@ -1291,7 +1876,17 @@ function youtubePlaylistView({ scroller, params }) {
     ? async () => ({ ...(collection.find(href) || saved), description: '' })
     : () => liveOrSaved(href, youtube.playlist(params[0]));
   return asyncView(fetching, (playlist) => {
-    const list = trackList(scroller, playlist.tracks);
+    const canEdit = youtube.isSignedIn() && params[0] !== 'VLLM';
+    const list = trackList(scroller, playlist.tracks, canEdit ? {
+      playlistSource: 'youtube',
+      playlistId: params[0],
+      onRemoved: (gone) => {
+        playlist.tracks = playlist.tracks.filter((t) => t.id !== gone.id);
+        pagecache.keep(href, { ...playlist, href });
+        if (collection.find(href)) collection.save({ ...collection.find(href), tracks: playlist.tracks });
+        reopen(href);
+      },
+    } : {});
     const length = playlist.tracks.reduce((sum, t) => sum + (t.duration || 0), 0);
     return {
       parts: [list],
@@ -1316,35 +1911,176 @@ function youtubePlaylistView({ scroller, params }) {
   });
 }
 
-const SERVICE_NAMES = { apple: 'Apple Music', youtube: 'YouTube Music' };
+const SERVICE_NAMES = { apple: 'Apple Music', youtube: 'YouTube Music', spotify: 'Spotify' };
 
-/** A playlist made in Tint itself (from a Spotify link, say): its songs are the copy kept with it. */
-function tintPlaylistView({ scroller, params }) {
-  const href = `#/playlist/t/${encodeURIComponent(params[0])}`;
-  return asyncView(async () => {
-    const saved = collection.find(href);
-    if (!saved) throw new Error('This playlist is no longer saved in Tint.');
-    return saved;
-  }, (playlist) => {
-    const list = trackList(scroller, playlist.tracks);
+function spotifyAlbumView({ scroller, params }) {
+  if (!spotify.isSignedIn()) {
+    return {
+      el: h('section', { class: 'page' }, pageHead('Album'),
+        emptyState('Sign in to Spotify', 'Connect your Spotify Premium account in Settings to open Spotify albums.', linkButton('Open settings', '#/settings/spotify', 'primary'))),
+    };
+  }
+  return asyncView(() => spotify.album(params[0]), (album) => {
+    const parts = albumBody(scroller, album.tracks, album.artist);
+    return {
+      parts,
+      nodes: [
+        detailHead({
+          art: album.art, kind: 'Album on Spotify', title: album.title, byline: album.artist, bylineHref: album.artistHref || byName(album.artist),
+          facts: albumFacts(album, album.tracks), tracks: album.tracks,
+        }),
+        ...parts.map((p) => p.el),
+      ],
+    };
+  }, { needsApple: false, cacheKey: `#/album/s/${encodeURIComponent(params[0])}` });
+}
+
+function spotifyPlaylistView({ scroller, params }) {
+  const href = `#/playlist/s/${encodeURIComponent(params[0])}`;
+  const saved = collection.find(href)?.tracks?.length ? collection.find(href) : null;
+  if (!spotify.isSignedIn() && !saved) {
+    return {
+      el: h('section', { class: 'page' }, pageHead('Playlist'),
+        emptyState('Sign in to Spotify', 'Connect your Spotify Premium account in Settings to open and play Spotify playlists.', linkButton('Open settings', '#/settings/spotify', 'primary'))),
+    };
+  }
+  const fetching = saved
+    ? async () => ({ ...(collection.find(href) || saved), description: '' })
+    : () => liveOrSaved(href, spotify.playlist(params[0]));
+  return asyncView(fetching, (playlist) => {
+    const canEdit = spotify.isSignedIn() && spotify.editablePlaylists().some((p) => p.id === params[0]);
+    const list = trackList(scroller, playlist.tracks, canEdit ? {
+      playlistSource: 'spotify',
+      playlistId: params[0],
+      onRemoved: (gone) => {
+        playlist.tracks = playlist.tracks.filter((t) => t.id !== gone.id);
+        pagecache.keep(href, { ...playlist, href });
+        if (collection.find(href)) collection.save({ ...collection.find(href), tracks: playlist.tracks });
+        reopen(href);
+      },
+    } : {});
     const length = playlist.tracks.reduce((sum, t) => sum + (t.duration || 0), 0);
-    const from = playlist.from?.kind === 'spotify'
-      ? `Made from a Spotify ${playlist.from.what === 'album' ? 'album' : 'playlist'}, with its songs found on ${SERVICE_NAMES[playlist.from.service] || 'Apple Music and YouTube Music'}.`
-      : '';
     return {
       parts: [list],
       nodes: [
         detailHead({
-          art: playlist.art || playlist.tracks[0]?.art, kind: 'Playlist in Tint',
+          art: playlist.art || playlist.tracks[0]?.art,
+          kind: playlist.fromCopy ? 'Playlist (the copy saved in Tint)' : 'Playlist on Spotify',
           title: playlist.title, byline: playlist.artist,
           facts: [plural(playlist.tracks.length, 'song'), length ? fmtLength(length) : null].filter(Boolean).join(', '),
-          description: from, tracks: playlist.tracks, saveAs: playlist,
-          extra: playlist.from?.kind === 'spotify' && playlist.from.url ? refreshButton(href) : null,
+          description: playlist.description, tracks: playlist.tracks,
+          saveAs: { id: params[0], source: 'spotify', ...playlist, href },
+          extra: saved ? refreshButton(href) : null,
         }),
         playlist.tracks.length ? list.el : emptyState('This playlist is empty'),
       ],
     };
-  }, { needsApple: false });
+  }, { needsApple: false, cacheKey: saved ? null : href });
+}
+
+/** A playlist made in Tint itself (unified Liked songs, custom playlists, or saved from Spotify): reacts live. */
+function tintPlaylistView({ scroller, params }) {
+  const href = `#/playlist/t/${encodeURIComponent(params[0])}`;
+  const isLikedPage = href === likes.LIKED_HREF;
+  const el = h('section', { class: 'page' });
+  let list = null;
+  let likedFilter = 'all';
+
+  if (isLikedPage) likes.warm();
+
+  function draw() {
+    list?.destroy();
+    list = null;
+
+    if (isLikedPage) {
+      const info = likes.merged({ source: likedFilter });
+      const filterChoices = [
+        ['all', 'All liked', 'grid'],
+        info.counts.local > 0 && ['local', 'On this PC', 'pc'],
+        apple.isSignedIn() && ['apple', 'Apple Music', 'appleMono'],
+        youtube.isSignedIn() && ['youtube', 'YouTube Music', 'youtubeMono'],
+        spotify.isSignedIn() && ['spotify', 'Spotify', 'spotifyMono'],
+      ].filter(Boolean);
+      if (!filterChoices.some(([id]) => id === likedFilter)) likedFilter = 'all';
+      const tracks = likes.merged({ source: likedFilter }).tracks;
+      const length = tracks.reduce((sum, t) => sum + (t.duration || 0), 0);
+      const loadingNote = info.loading.length ? `Syncing ${info.loading.join(', ')}…` : null;
+      const sourceText = info.activeSources.length ? `Merged from ${info.activeSources.join(', ')}` : 'In Tint';
+      const facts = [plural(tracks.length, 'song'), length ? fmtLength(length) : null, loadingNote].filter(Boolean).join(' · ');
+      const showSource = filterChoices.length > 2;
+      list = tracks.length ? trackList(scroller, tracks, { playlistHref: href, showSource }) : null;
+
+      fill(el,
+        detailHead({
+          artEl: playlistArt({ href, kind: 'liked' }, 240, { lazy: false }),
+          kind: 'Unified Liked songs',
+          title: 'Liked songs',
+          byline: sourceText,
+          facts,
+          tracks,
+          extra: filterChoices.length > 2
+            ? segmented('Show liked songs from', filterChoices, likedFilter, (v) => { likedFilter = v; draw(); }, { iconsOnly: true })
+            : null,
+        }),
+        list ? list.el
+          : info.loading.length ? loading(`Syncing liked songs from ${info.loading.join(', ')}…`)
+            : emptyState('No liked songs yet', 'Click the heart on any song to like it — likes sync with Apple Music, YouTube Music and Spotify automatically.'));
+      return;
+    }
+
+    const playlist = collection.find(href);
+    if (!playlist) {
+      fill(el, emptyState('This playlist is no longer in Tint', 'It may have been deleted or cleared.', linkButton('Back to playlists', '#/playlists')));
+      return;
+    }
+    const isCustom = !playlist.from;
+    const tracks = playlist.tracks || [];
+    list = tracks.length ? trackList(scroller, tracks, { playlistHref: href }) : null;
+    const length = tracks.reduce((sum, t) => sum + (t.duration || 0), 0);
+    const from = playlist.from?.kind === 'spotify'
+      ? `Made from a Spotify ${playlist.from.what === 'album' ? 'album' : 'playlist'}, with its songs found on ${SERVICE_NAMES[playlist.from.service] || 'Apple Music and YouTube Music'}.`
+      : '';
+    const extraMenu = isCustom
+      ? (r) => [
+        { icon: 'pen', label: 'Rename playlist…', run: () => renamePlaylistPanel(r.left, r.bottom + 4, playlist) },
+        {
+          icon: 'trash',
+          label: 'Delete playlist',
+          danger: true,
+          run: () => {
+            collection.remove(href);
+            toast(`Deleted "${playlist.title}"`);
+            location.hash = '#/playlists';
+          },
+        },
+      ]
+      : null;
+
+    fill(el,
+      detailHead({
+        art: playlist.art || tracks[0]?.art,
+        kind: 'Playlist in Tint',
+        title: playlist.title,
+        byline: playlist.artist,
+        facts: [plural(tracks.length, 'song'), length ? fmtLength(length) : null].filter(Boolean).join(', '),
+        description: from,
+        tracks,
+        saveAs: playlist,
+        extra: playlist.from?.kind === 'spotify' && playlist.from.url ? refreshButton(href) : null,
+        extraMenu,
+      }),
+      list ? list.el : emptyState('This playlist is empty', 'Right-click any song or album and choose Add to playlist… to put songs here.'));
+  }
+
+  draw();
+  return {
+    el,
+    refresh: (why) => {
+      if (why === 'track') list?.refresh();
+      else if (why === 'collection' || (isLikedPage && (why === 'apple' || why === 'youtube' || why === 'spotify'))) draw();
+    },
+    destroy: () => list?.destroy(),
+  };
 }
 
 // ---- Artists ------------------------------------------------------------------------------------
@@ -1355,7 +2091,7 @@ function tintPlaylistView({ scroller, params }) {
  */
 function artistView(kind) {
   return ({ scroller, params }) => {
-    const ref = kind === 'a' ? { apple: params[0] } : kind === 'y' ? { youtube: params[0] } : { name: params[0] };
+    const ref = kind === 'a' ? { apple: params[0] } : kind === 'y' ? { youtube: params[0] } : kind === 's' ? { spotify: params[0] } : { name: params[0] };
     if (youtube.isReady()) youtube.warm();
     return asyncView(() => artistProfile(ref), (artist) => {
       const parts = [];
@@ -1374,9 +2110,9 @@ function artistView(kind) {
       ].filter(Boolean);
       if (nodes.length === 1) nodes.push(emptyState('Nothing by this artist yet', kind === 'l'
         ? 'Nothing by this artist is on this PC any more.'
-        : 'Neither Apple Music nor YouTube Music lists anything by this artist.'));
-      const from = [artist.from.apple && 'Apple Music', artist.from.youtube && 'YouTube Music'].filter(Boolean);
-      if (from.length) nodes.push(h('p', { class: 'quiet artist-from' }, `From ${from.join(' and ')}.`));
+        : 'No connected streaming service lists anything by this artist.'));
+      const from = [artist.from.apple && 'Apple Music', artist.from.spotify && 'Spotify', artist.from.youtube && 'YouTube Music'].filter(Boolean);
+      if (from.length) nodes.push(h('p', { class: 'quiet artist-from' }, `From ${from.join(', ')}.`));
       return { parts, nodes };
     }, { needsApple: false });
   };
@@ -1414,12 +2150,14 @@ function searchView({ scroller, params }) {
   let parts = [];
   let remote = null; // null = not asked, 'loading', { ...results }, or an Error
   let tube = null;   // the same, for YouTube Music
+  let spot = null;   // the same, for Spotify
   // A pasted YouTube link: the song it points at goes first, then the rest found by its name.
   const linked = youtube.videoIn(term);
   let fromLink = linked ? 'loading' : null;
-  // A pasted Spotify link: the same songs found on Apple Music and YouTube Music.
+  // A pasted Spotify link: native track when signed in, or matched to Apple/YouTube when signed out.
   const spotted = linked ? null : spotify.linkIn(term);
   let fromSpotify = spotted ? 'loading' : null; // then null (nothing there), an Error, or what spotifyFound() takes
+  let nativeSpotifyTrack = null; // playable native Spotify track when signed in & link is a track
   let matchRun = 0; // a new search for a list's songs makes the one before stop
   let query = linked || spotted ? '' : term;
   let alive = true;
@@ -1477,22 +2215,42 @@ function searchView({ scroller, params }) {
     }
 
     if (spotted) {
-      if (!apple.instance() && !youtube.isReady()) {
-        nodes.push(emptyState('Nowhere to look', "Tint can't play from Spotify. Set up Apple Music or YouTube Music in Settings, and the same songs are found there."));
+      if (spotify.isSignedIn() && spotted.kind === 'track') {
+        if (nativeSpotifyTrack === 'loading') nodes.push(loading('Opening on Spotify…'));
+        else if (nativeSpotifyTrack instanceof Error) nodes.push(h('p', { class: 'quiet' }, `Spotify didn't answer: ${nativeSpotifyTrack.message}`));
+        else if (nativeSpotifyTrack) nodes.push(songList('On Spotify', [nativeSpotifyTrack]));
+      }
+      if (!spotify.isSignedIn() && !apple.instance() && !youtube.isReady()) {
+        nodes.push(emptyState('Nowhere to look', 'Connect Spotify in Settings to play it directly, or set up Apple Music or YouTube Music to find the same songs there.', linkButton('Open settings', '#/settings/spotify', 'primary')));
         fill(el, ...nodes);
         return;
       }
-      if (fromSpotify === 'loading') nodes.push(loading('Reading the Spotify link…'));
-      else if (fromSpotify instanceof Error) nodes.push(h('p', { class: 'quiet' }, `Spotify didn't answer: ${fromSpotify.message}`));
-      else if (!fromSpotify) nodes.push(emptyState('Nothing at that link', "Spotify doesn't have anything there, or it's private."));
-      else nodes.push(...spotifyFound(fromSpotify, songList));
+      if (!spotify.isSignedIn() || spotted.kind !== 'track') {
+        if (fromSpotify === 'loading') nodes.push(loading('Reading the Spotify link…'));
+        else if (fromSpotify instanceof Error) nodes.push(h('p', { class: 'quiet' }, `Spotify didn't answer: ${fromSpotify.message}`));
+        else if (!fromSpotify) nodes.push(emptyState('Nothing at that link', "Spotify doesn't have anything there, or it's private."));
+        else nodes.push(...spotifyFound(fromSpotify, songList));
+      }
     }
 
     // The songs a Spotify link was matched to are already at the top.
-    const shown = new Set(fromSpotify?.found ? [fromSpotify.apple, fromSpotify.tube].filter((song) => song?.id).map((song) => song.id) : []);
+    const shown = new Set([
+      ...(fromSpotify?.found ? [fromSpotify.apple, fromSpotify.tube] : []),
+      nativeSpotifyTrack && typeof nativeSpotifyTrack === 'object' && !(nativeSpotifyTrack instanceof Error) ? nativeSpotifyTrack : null,
+    ].filter((song) => song?.id).map((song) => song.id));
 
     if (mine.songs.length) nodes.push(songList('Songs on this PC', mine.songs));
     if (mine.albums.length) nodes.push(h('section', { class: 'shelf' }, h('h2', {}, 'Albums on this PC'), grid(mine.albums)));
+
+    if (spot === 'loading') nodes.push(loading('Searching Spotify…'));
+    else if (spot instanceof Error) nodes.push(h('p', { class: 'quiet' }, `Spotify didn't answer: ${spot.message}`));
+    else if (spot) {
+      const songs = spot.songs.filter((song) => !shown.has(song.id));
+      if (songs.length) nodes.push(songList('Songs on Spotify', songs));
+      if (spot.albums.length) nodes.push(shelf('Albums on Spotify', spot.albums));
+      if (spot.artists.length) nodes.push(shelf('Artists on Spotify', spot.artists));
+      if (spot.playlists.length) nodes.push(shelf('Playlists on Spotify', spot.playlists));
+    }
 
     if (remote === 'loading') nodes.push(loading('Searching Apple Music…'));
     else if (remote instanceof Error) nodes.push(h('p', { class: 'quiet' }, `Apple Music didn't answer: ${remote.message}`));
@@ -1516,17 +2274,24 @@ function searchView({ scroller, params }) {
     const count = (results, ...kinds) => (results && results !== 'loading' && !(results instanceof Error)
       ? kinds.reduce((sum, kind) => sum + results[kind].length, 0) : 0);
     const found = (spotted ? 1 : 0) + mine.songs.length + mine.albums.length +
-      count(remote, 'songs', 'albums', 'artists', 'playlists') + count(tube, 'songs', 'albums', 'artists');
-    if (!found && query && remote !== 'loading' && tube !== 'loading') {
-      nodes.push(emptyState('Nothing matched', apple.instance() || tube
+      count(spot, 'songs', 'albums', 'artists', 'playlists') +
+      count(remote, 'songs', 'albums', 'artists', 'playlists') +
+      count(tube, 'songs', 'albums', 'artists');
+    if (!found && query && spot !== 'loading' && remote !== 'loading' && tube !== 'loading') {
+      nodes.push(emptyState('Nothing matched', apple.instance() || tube || spotify.isSignedIn()
         ? 'Check the spelling, or try fewer words.'
-        : 'Only the music on this PC was searched. Set up Apple Music or YouTube Music in Settings to search their catalogs too.'));
+        : 'Only the music on this PC was searched. Set up Spotify, Apple Music or YouTube Music in Settings to search their catalogs too.'));
     }
     fill(el, ...nodes);
     reveal();
   }
 
   function lookUp() {
+    if (query && spotify.isSignedIn()) {
+      spot = 'loading';
+      spotify.search(query).then((r) => { spot = r; }, (e) => { spot = e instanceof Error ? e : new Error(String(e)); })
+        .then(() => { if (alive) draw(); });
+    }
     if (query && apple.instance()) {
       remote = 'loading';
       apple.search(query).then((r) => { remote = r; }, (e) => { remote = e instanceof Error ? e : new Error(String(e)); })
@@ -1550,7 +2315,14 @@ function searchView({ scroller, params }) {
     }, (e) => { fromLink = e instanceof Error ? e : new Error(String(e)); })
       .then(() => { if (!alive) return; lookUp(); draw(); });
   }
-  if (spotted) {
+  if (spotted && spotify.isSignedIn() && spotted.kind === 'track') {
+    nativeSpotifyTrack = 'loading';
+    spotify.track(spotted.id).then((song) => {
+      nativeSpotifyTrack = song;
+      if (song) query = `${song.title} ${song.artist.split(',')[0]}`.trim();
+    }, (e) => { nativeSpotifyTrack = e instanceof Error ? e : new Error(String(e)); })
+      .then(() => { if (!alive) return; lookUp(); draw(); });
+  } else if (spotted) {
     spotify.lookUp(spotted).then((found) => {
       if (!found) { fromSpotify = null; return; }
       const first = found.songs[0];
@@ -1589,7 +2361,7 @@ function searchView({ scroller, params }) {
   draw();
   return {
     el,
-    refresh: (why) => { if (why === 'track') parts.forEach((p) => p.refresh()); else if (why === 'local') draw(); },
+    refresh: (why) => { if (why === 'track' || why === 'collection') parts.forEach((p) => p.refresh()); else if (why === 'local') draw(); },
     destroy: () => { alive = false; parts.forEach((p) => p.destroy()); },
   };
 }
@@ -1662,7 +2434,7 @@ function spotifyFound(state, songList) {
 /** A line saying where a page came from: the link that was pasted, with its service's mark. */
 function pastedNote(service, what, name) {
   return h('div', { class: 'pasted-note pasted-' + service },
-    h('span', { class: 'pasted-icon', icon: service }),
+    h('span', { class: 'pasted-icon', icon: service === 'youtube' ? 'youtubeVideo' : service }),
     h('span', { class: 'pasted-text' }, h('span', { class: 'quiet' }, what), h('strong', {}, name)));
 }
 
@@ -1725,7 +2497,7 @@ function refreshButton(href) {
     btn.disabled = true;
     label('Checking…');
     try {
-      if (saved.source === 'apple' || saved.source === 'youtube') await refreshFromService(saved);
+      if (saved.source === 'apple' || saved.source === 'youtube' || saved.source === 'spotify') await refreshFromService(saved);
       else await refreshFromSpotify(saved, label);
     } catch (e) {
       toast(e?.message || "The playlist couldn't be checked.");
@@ -1744,7 +2516,8 @@ function reopen(href) {
 
 async function refreshFromService(saved) {
   if (saved.source === 'apple' && !apple.instance()) throw new Error('Set up Apple Music in Settings to refresh this playlist.');
-  const live = await (saved.source === 'apple' ? apple.playlist(saved.id) : youtube.playlist(saved.id));
+  if (saved.source === 'spotify' && !spotify.isSignedIn()) throw new Error('Sign in to Spotify in Settings to refresh this playlist.');
+  const live = await (saved.source === 'apple' ? apple.playlist(saved.id) : saved.source === 'spotify' ? spotify.playlist(saved.id) : youtube.playlist(saved.id));
   const before = new Set(saved.tracks.map((t) => t.id));
   const now = new Set(live.tracks.map((t) => t.id));
   const added = live.tracks.filter((t) => !before.has(t.id)).length;
@@ -1833,14 +2606,15 @@ function pickBackup(done) {
 /** The first page of a new install: where the music comes from, and where it is on this PC. */
 function welcomeView() {
   const el = h('section', { class: 'page welcome' });
-  let choice = ['apple', 'youtube', 'pc'].includes(prefs.mainService) ? prefs.mainService : null;
+  let choice = ['apple', 'youtube', 'spotify', 'pc'].includes(prefs.mainService) ? prefs.mainService : null;
   const returning = !!choice;
   let busy = false;
   const start = h('button', { class: 'btn primary', onclick: () => finish() }, 'Start listening');
   const services = [
     ['apple', 'Apple Music', 'Your Apple Music library, and the whole catalog with a subscription.'],
     ['youtube', 'YouTube Music', 'Your YouTube Music library and the whole catalog.'],
-    ['pc', 'Only music on this PC', 'The music files in your folders. Either service can be set up later.'],
+    ['spotify', 'Spotify', 'Your Spotify library, playlists and full catalog with Spotify Premium.'],
+    ['pc', 'Only music on this PC', 'The music files in your folders. Any service can be set up later.'],
   ];
   const ready = () => { start.disabled = !choice || busy; start.title = choice ? '' : 'Choose where you listen first'; };
 
@@ -1849,7 +2623,7 @@ function welcomeView() {
     busy = true;
     ready();
     try {
-      await savePrefs({ mainService: choice, welcomed: true, ...(choice === 'youtube' ? { youtube: true } : {}) });
+      await savePrefs({ mainService: choice, welcomed: true, ...(choice === 'youtube' ? { youtube: true } : {}), ...(choice === 'spotify' ? { spotifyEnabled: true } : {}) });
     } catch {
       busy = false;
       ready();
@@ -1863,6 +2637,9 @@ function welcomeView() {
     } else if (choice === 'youtube' && !youtube.isSignedIn()) {
       location.replace('#/settings/youtube');
       toast('Sign in to Google here to play from YouTube Music.', { ms: 5000 });
+    } else if (choice === 'spotify' && !spotify.isSignedIn()) {
+      location.replace('#/settings/spotify');
+      toast('Connect your Spotify Premium account here.', { ms: 5000 });
     } else {
       location.replace('#/home');
     }
@@ -2059,9 +2836,9 @@ function lyricsView({ scroller }) {
       oncontextmenu: (e) => {
         e.preventDefault();
         showMenu(e.clientX, e.clientY, [
-          lineTexts[i] && { label: 'Copy this line', run: () => copyText(lineTexts[i], 'Line copied') },
-          { label: 'Choose lines to copy…', run: () => startPicking(i) },
-          { label: 'Copy all the lyrics', run: () => copyText(lineTexts.join('\n'), 'Lyrics copied') },
+          lineTexts[i] && { icon: 'copy', label: 'Copy this line', run: () => copyText(lineTexts[i], 'Line copied') },
+          { icon: 'check', label: 'Choose lines to copy…', run: () => startPicking(i) },
+          { icon: 'copy', label: 'Copy all the lyrics', run: () => copyText(lineTexts.join('\n'), 'Lyrics copied') },
         ]);
       },
     });
@@ -2203,49 +2980,142 @@ function lyricsView({ scroller }) {
 
 // ---- Settings -----------------------------------------------------------------------------------
 
-function settingsView({ params } = {}) {
+function settingsView({ scroller, params } = {}) {
   const el = h('section', { class: 'page settings' });
   let busy = false;
+  let searchQuery = '';
+  let activeSec = { updates: 'updates', apple: 'apple', youtube: 'youtube', spotify: 'spotify', data: 'data' }[params?.[0]] || 'updates';
 
   const field = (label, input, hint) => h('label', { class: 'field' },
     h('span', { class: 'field-label' }, label), input, hint && h('span', { class: 'quiet field-hint' }, hint));
+
+  /** A Cutflow-style horizontal settings row: label + description left, control right. */
+  const setRow = (title, desc, control, { stack = false, cls = '' } = {}) => h('div', { class: 'set-row' + (stack ? ' is-stack' : '') + (cls ? ' ' + cls : '') },
+    h('div', { class: 'set-lbl' },
+      h('b', {}, title),
+      desc && (typeof desc === 'string' ? h('span', {}, desc) : desc)),
+    control && h('div', { class: 'set-ctl' }, control));
+
+  /** A pill toggle switch matching Tint's dynamic accent. */
+  const toggleSwitch = (checked, onchange, { disabled = false, label = '' } = {}) => h('label', { class: 'switch' + (disabled ? ' is-disabled' : '') },
+    h('input', { type: 'checkbox', checked, disabled, 'aria-label': label || null, onchange }),
+    h('span', { class: 'switch-track', 'aria-hidden': 'true' }));
+
+  const setSec = (id, title, navIcon, ...content) => h('section', { class: 'set-sec', id: `set-${id}`, dataset: { sec: id } },
+    h('h2', { class: 'set-sec-head' },
+      navIcon && h('span', { class: 'set-sec-icon', icon: navIcon }),
+      h('span', {}, title)),
+    h('div', { class: 'set-card' }, ...content));
 
   async function reconnect() {
     await apple.init();
     if (apple.getStatus() === 'error') toast(apple.getProblem());
   }
 
-  function foldersSection() {
+  function generalSection() {
     let status = 'Scanning…';
     if (!local.scanning) {
       status = `${plural(local.tracks.length, 'song')} found.`;
       if (local.skippedProtected) {
-        status += ` ${plural(local.skippedProtected, 'downloaded Apple Music file')} left out. Those are locked to Apple's own apps, so they play from Apple Music instead.`;
+        status += ` ${plural(local.skippedProtected, 'downloaded Apple Music file')} left out (locked to Apple's own apps, so they play from Apple Music instead).`;
       }
     }
-    return h('section', { class: 'panel' },
-      h('h2', {}, 'Music on this PC'),
-      h('p', { class: 'quiet' }, status),
-      h('ul', { class: 'folders' },
-        prefs.folders.map((folder) => h('li', {},
-          h('span', { class: 'folder-icon', icon: 'folder' }),
-          h('span', { class: 'folder-path', title: folder }, folder),
-          h('button', {
-            class: 'text-btn', 'aria-label': `Remove ${folder}`,
-            onclick: async () => { await savePrefs({ folders: prefs.folders.filter((f) => f !== folder) }); nudge(); },
-          }, 'Remove'))),
-        !prefs.folders.length && h('li', { class: 'quiet' }, 'No folders yet.')),
-      h('div', { class: 'panel-actions' },
-        button('Add a folder', async () => {
-          const { path } = await post('/api/pick-folder');
-          if (!path) return;
-          await savePrefs({ folders: [...prefs.folders, path] });
-          nudge();
-        }),
-        button('Scan again', async () => { await post('/api/rescan'); nudge(); })));
+    return setSec('general', 'General & library', 'pc',
+      setRow('Main service', 'Where you listen most. Pasted links are looked up there first.',
+        segmented('Main service', [
+          ['apple', 'Apple Music', 'appleMono'],
+          ['youtube', 'YouTube Music', 'youtubeMono'],
+          ['spotify', 'Spotify', 'spotifyMono'],
+          ['pc', 'Only this PC', 'pc'],
+        ], prefs.mainService || 'pc', (v) => savePrefs({ mainService: v }), { iconsOnly: true })),
+      h('div', { class: 'set-row is-stack' },
+        h('div', { class: 'set-row-head' },
+          h('div', { class: 'set-lbl' }, h('b', {}, 'Music folders on this PC'), h('span', {}, status)),
+          h('div', { class: 'set-inline-actions' },
+            button('Add a folder', async () => {
+              const { path } = await post('/api/pick-folder');
+              if (!path) return;
+              await savePrefs({ folders: [...prefs.folders, path] });
+              nudge();
+            }),
+            button('Scan again', async () => { await post('/api/rescan'); nudge(); }))),
+        h('ul', { class: 'folders' },
+          prefs.folders.map((folder) => h('li', {},
+            h('span', { class: 'folder-icon', icon: 'folder' }),
+            h('span', { class: 'folder-path', title: folder }, folder),
+            h('button', {
+              class: 'text-btn', 'aria-label': `Remove ${folder}`,
+              onclick: async () => { await savePrefs({ folders: prefs.folders.filter((f) => f !== folder) }); nudge(); },
+            }, 'Remove'))),
+          !prefs.folders.length && h('li', { class: 'quiet' }, 'No folders yet.'))),
+      setRow(
+        'Open links from other apps',
+        'Experimental. Registers tint:// so other apps, shortcuts, or browsers can send Spotify, YouTube Music, or Apple Music links straight into Tint.',
+        toggleSwitch(!!prefs.handleLinks, async (e) => {
+          await savePrefs({ handleLinks: e.target.checked });
+          toast(e.target.checked ? 'Tint can now open tint:// links from other apps' : 'Removed Tint link handler');
+        }, { label: 'Open links from other apps' })),
+      prefs.handleLinks && setRow(
+        'Also catch spotify: & music: app links',
+        'Handle "Open in Spotify" and Apple Music app links directly in Tint. Turning this off restores your previous app handler.',
+        toggleSwitch(!!prefs.handleAppLinks, async (e) => {
+          await savePrefs({ handleAppLinks: e.target.checked });
+          toast(e.target.checked ? 'Tint now catches spotify: and music: links' : 'Restored previous spotify: and music: handlers');
+        }, { label: 'Catch spotify and music app links' })),
+      prefs.handleLinks && (() => {
+        const testInput = h('input', {
+          type: 'text',
+          value: 'tint://open?url=https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT',
+          placeholder: 'tint://open?url=https://...',
+          spellcheck: false,
+          'aria-label': 'Test link URL',
+        });
+        const runTest = async () => {
+          const url = testInput.value.trim();
+          if (!url) return;
+          const res = await post('/api/test-link', { url }).catch(() => ({ ok: false }));
+          if (!res?.ok) toast('Only Spotify, Apple Music, and YouTube Music links are accepted.', { ms: 4000 });
+        };
+        testInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); runTest(); } });
+        return h('div', { class: 'set-row is-stack' },
+          field('Test protocol round-trip', h('div', { class: 'id-row' }, testInput, button('Test link', runTest)),
+            'Only Spotify, Apple Music, and YouTube Music links are accepted.'));
+      })());
+  }
+
+  function appearanceSection() {
+    return setSec('appearance', 'Appearance', 'palette',
+      setRow('Keep the window dark', 'Normally a light cover gives you a light window. Turn this on to stay dark for every cover.',
+        toggleSwitch(prefs.keepDark, (e) => savePrefs({ keepDark: e.target.checked }), { label: 'Keep the window dark' })),
+      setRow('Cover backdrop', "Use the playing song's cover as a soft, translucent blurred background across the whole window.",
+        toggleSwitch(prefs.coverBackdrop, (e) => savePrefs({ coverBackdrop: e.target.checked }), { label: 'Cover backdrop' })));
+  }
+
+  /** A slider for a length of time, saved when let go. */
+  function durationRow(title, hint, key, max, step) {
+    const said = (ms) => (ms === 0 ? 'Off' : ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`);
+    const value = h('span', { class: 'set-val' }, said(prefs[key]));
+    const show = (input) => {
+      input.style.setProperty('--fill', `${(input.value / max) * 100}%`);
+      value.textContent = said(Number(input.value));
+    };
+    const input = h('input', {
+      type: 'range', class: 'slider', min: 0, max, step, value: prefs[key], 'aria-label': title,
+      oninput: (e) => show(e.target),
+      onchange: (e) => savePrefs({ [key]: Number(e.target.value) }),
+    });
+    show(input);
+    return setRow(title, hint, h('div', { class: 'set-slider' }, input, value));
+  }
+
+  function playbackSection() {
+    return setSec('playback', 'Playback', 'play',
+      durationRow('Fade on play & pause', 'A short fade instead of the sound cutting in and out.', 'pauseFadeMs', 1000, 10),
+      durationRow('Crossfade when skipping', 'How long a skipped song fades into the next. Two Apple Music songs or two YouTube Music player songs fade sequentially.', 'crossfadeMs', 5000, 100));
   }
 
   let ownKeyOpen = false;
+  let explicitHelpOpen = false;
 
   function appleSection() {
     const status = apple.getStatus();
@@ -2257,51 +3127,49 @@ function settingsView({ params } = {}) {
       await savePrefs({ forgetApple: true });
       location.reload();
     };
-    const via = prefs.apple.useWeb && !ownKey ? " Tint is using the web player's token." : '';
+    const via = prefs.apple.useWeb && !ownKey ? " Using the web player's token." : '';
 
     if (signedIn) {
-      return h('section', { class: 'panel' },
-        h('h2', {}, 'Apple Music'),
-        h('p', {}, 'Signed in. Your library, playlists and the whole catalog are ready to play.' + via),
-        h('label', { class: 'check explicit-check' },
-          h('input', { type: 'checkbox', checked: apple.explicitAllowed(), onchange: (e) => apple.setExplicitAllowed(e.target.checked) }),
-          h('span', {},
-            h('span', {}, 'Play explicit songs'),
-            h('span', { class: 'quiet' }, 'In some countries, Brazil included, Apple leaves explicit songs switched off until you allow them.'))),
-        h('p', { class: 'quiet explicit-help' },
-          "If they still won't play, Apple's own servers are refusing them for your account. Tint can't change that. Apple's own message and other people's reports point to these places:"),
-        h('ol', { class: 'steps explicit-steps' },
-          h('li', {}, 'At music.apple.com, in Settings under Parental Controls, turn Content Restrictions ', h('strong', {}, 'on'), ' and set Music to ', h('strong', {}, 'Explicit'), '. In some countries, leaving restrictions off still counts as blocked. ',
-            h('button', { class: 'text-btn', onclick: () => post('/api/open', { url: 'https://music.apple.com/account/settings' }) }, 'Open that page')),
-          h('li', {}, 'On an iPhone or iPad with the same Apple Account: Settings, Screen Time, Content & Privacy Restrictions, then allow Explicit for music.'),
-          h('li', {}, 'In the Apple Music app for Windows: Settings, Restrictions, and untick music with explicit content.')),
-        h('p', { class: 'quiet explicit-help' }, 'Then play the song again. If it is still refused, sign out here and sign back in.'),
-        h('div', { class: 'panel-actions' },
-          button('Sign out', () => apple.signOut().catch((e) => toast(e?.message || String(e)))),
-          button('Remove setup', removeSetup)));
+      return setSec('apple', 'Apple Music', 'appleMono',
+        setRow('Account', 'Signed in. Your library, playlists and the full catalog are ready to play.' + via,
+          h('div', { class: 'set-inline-actions' },
+            button('Sign out', () => apple.signOut().catch((e) => toast(e?.message || String(e)))),
+            button('Remove setup', removeSetup))),
+        setRow('Play explicit songs', 'In some countries, Brazil included, Apple leaves explicit songs switched off until you allow them.',
+          toggleSwitch(apple.explicitAllowed(), (e) => apple.setExplicitAllowed(e.target.checked), { label: 'Play explicit songs' })),
+        h('div', { class: 'set-row is-stack' },
+          h('details', { open: explicitHelpOpen, ontoggle: (e) => { explicitHelpOpen = e.target.open; } },
+            h('summary', {}, 'Explicit songs still blocked by Apple?'),
+            h('p', { class: 'quiet set-note' },
+              "If they still won't play, Apple's own servers are refusing them for your account. Tint can't change that. Check these places:"),
+            h('ol', { class: 'steps explicit-steps' },
+              h('li', {}, 'At music.apple.com, in Settings under Parental Controls, turn Content Restrictions ', h('strong', {}, 'on'), ' and set Music to ', h('strong', {}, 'Explicit'), '. ',
+                h('button', { class: 'text-btn', onclick: () => post('/api/open', { url: 'https://music.apple.com/account/settings' }) }, 'Open that page')),
+              h('li', {}, 'On an iPhone or iPad with the same Apple Account: Settings, Screen Time, Content & Privacy Restrictions, then allow Explicit for music.'),
+              h('li', {}, 'In the Apple Music app for Windows: Settings, Restrictions, and untick music with explicit content.')),
+            h('p', { class: 'quiet set-note' }, 'Then play the song again. If it is still refused, sign out here and sign back in.'))));
     }
 
     if (configured && status === 'ready') {
-      return h('section', { class: 'panel' },
-        h('h2', {}, 'Apple Music'),
-        h('p', {}, 'Setup is done. Sign in with the Apple Account that has your subscription.' + via),
-        h('div', { class: 'panel-actions' },
-          button('Sign in to Apple Music', () => apple.signIn().catch((e) => toast(e?.message || 'Sign-in was cancelled.')), 'primary'),
-          button('Remove setup', removeSetup)));
+      return setSec('apple', 'Apple Music', 'appleMono',
+        setRow('Sign in', 'Setup is done. Sign in with the Apple Account that has your subscription.' + via,
+          h('div', { class: 'set-inline-actions' },
+            button('Sign in to Apple Music', () => apple.signIn().catch((e) => toast(e?.message || 'Sign-in was cancelled.')), 'primary'),
+            button('Remove setup', removeSetup))));
     }
 
     if (configured && status === 'loading') {
-      return h('section', { class: 'panel' }, h('h2', {}, 'Apple Music'), loading('Connecting to Apple Music…'));
+      return setSec('apple', 'Apple Music', 'appleMono',
+        h('div', { class: 'set-row' }, loading('Connecting to Apple Music…')));
     }
 
-    // The web player's token was chosen but Apple couldn't be reached or didn't accept it.
     if (prefs.apple.useWeb && !ownKey) {
-      return h('section', { class: 'panel' },
-        h('h2', {}, 'Apple Music'),
-        h('p', { class: 'warn' }, apple.getProblem() || "Apple Music isn't connected."),
-        h('div', { class: 'panel-actions' },
-          button('Try again', reconnect, 'primary'),
-          button('Remove setup', removeSetup)));
+      return setSec('apple', 'Apple Music', 'appleMono',
+        h('div', { class: 'set-row is-stack' },
+          h('p', { class: 'warn' }, apple.getProblem() || "Apple Music isn't connected."),
+          h('div', { class: 'set-inline-actions' },
+            button('Try again', reconnect, 'primary'),
+            button('Remove setup', removeSetup))));
     }
 
     const team = h('input', { type: 'text', value: prefs.apple.teamId, placeholder: 'A1B2C3D4E5', maxLength: 16, spellcheck: false, autocomplete: 'off' });
@@ -2309,17 +3177,10 @@ function settingsView({ params } = {}) {
     const token = h('textarea', { rows: 3, placeholder: 'eyJhbGciOiJFUzI1NiIs…', spellcheck: false });
     const problem = apple.getProblem();
 
-    return h('section', { class: 'panel' },
-      h('h2', {}, 'Apple Music'),
-      problem && h('p', { class: 'warn' }, problem),
-      h('p', {},
-        'Apple only lets an app play subscription music if the app shows a developer token. ',
-        "Tint can use the one Apple's own web player gives to every visitor, so you don't need a paid developer account."),
-      h('p', {},
-        'With it, Tint presents itself to Apple as music.apple.com. You still sign in with your own Apple Account, ',
-        "and the music plays through Apple's own player and copy protection. Other third-party players work the same way, ",
-        "but Apple's terms don't provide for it, and it can stop working whenever Apple changes their site."),
-      h('div', { class: 'panel-actions' },
+    return setSec('apple', 'Apple Music', 'appleMono',
+      problem && h('div', { class: 'set-row is-stack' }, h('p', { class: 'warn' }, problem)),
+      setRow("Use the web player's token",
+        "No paid developer account needed. Tint presents itself as music.apple.com and plays through Apple's own player. Apple's terms don't provide for it, and it can break if Apple changes their site.",
         button("Use the web player's token", async () => {
           if (busy) return;
           busy = true;
@@ -2331,54 +3192,55 @@ function settingsView({ params } = {}) {
             draw();
           }
         }, 'primary')),
-
-      h('details', { open: ownKeyOpen || prefs.apple.hasKey, ontoggle: (e) => { ownKeyOpen = e.target.open; } },
-        h('summary', {}, 'Use my own Apple Developer key instead'),
-        h('p', {}, 'Members of the Apple Developer Program can make a MusicKit key, which is the way Apple intends apps to connect.'),
-        h('ol', { class: 'steps' },
-          h('li', {}, 'At developer.apple.com, open Certificates, Identifiers & Profiles, then Keys. Create a key with ', h('strong', {}, 'Media Services (MusicKit)'), ' ticked and download the .p8 file.'),
-          h('li', {}, 'Copy the Key ID shown next to the key, and your Team ID from the Membership page.'),
-          h('li', {}, 'Enter both here and choose the .p8 file.')),
-        h('p', {}, h('button', { class: 'text-btn', onclick: () => post('/api/open', { url: 'https://developer.apple.com/account/resources/authkeys/list' }) }, 'Open the Keys page at developer.apple.com')),
-        h('div', { class: 'fields' },
-          field('Team ID', team),
-          field('Key ID', key),
-          field('Private key', h('div', { class: 'key-row' },
-            h('span', { class: prefs.apple.hasKey ? '' : 'quiet' }, prefs.apple.hasKey ? 'Key saved (encrypted for your Windows account)' : 'No key chosen'),
-            button(prefs.apple.hasKey ? 'Replace…' : 'Choose .p8 file…', async () => {
-              await savePrefs({ appleTeamId: team.value, appleKeyId: key.value });
-              const res = await post('/api/pick-key');
-              if (res.error) toast(res.error, { ms: 6000 });
-              if (res.ok) { await savePrefs({}); draw(); }
-            })))),
-        h('div', { class: 'fields' },
-          field('Or paste a developer token', token, 'A token you made yourself. It is used in place of the key until you clear it.')),
-        h('div', { class: 'panel-actions' },
-          h('button', {
-            class: 'btn',
-            onclick: async () => {
-              if (busy) return;
-              busy = true;
-              try {
-                const changes = { appleTeamId: team.value, appleKeyId: key.value };
-                if (token.value.trim()) changes.appleToken = token.value;
-                await savePrefs(changes);
-                const ready = prefs.apple.hasToken || (prefs.apple.hasKey && prefs.apple.teamId && prefs.apple.keyId);
-                if (!ready) { toast('Add the Team ID, the Key ID and the .p8 key first.'); return; }
-                await reconnect();
-              } finally {
-                busy = false;
-                draw();
-              }
-            },
-          }, 'Save and connect'),
-          (prefs.apple.hasKey || prefs.apple.hasToken) && button('Clear', removeSetup))));
+      h('div', { class: 'set-row is-stack' },
+        h('details', { open: ownKeyOpen || prefs.apple.hasKey, ontoggle: (e) => { ownKeyOpen = e.target.open; } },
+          h('summary', {}, 'Use my own Apple Developer key instead'),
+          h('p', { class: 'set-note' }, 'Members of the Apple Developer Program can make a MusicKit key, which is the way Apple intends apps to connect.'),
+          h('ol', { class: 'steps' },
+            h('li', {}, 'At developer.apple.com, open Certificates, Identifiers & Profiles, then Keys. Create a key with ', h('strong', {}, 'Media Services (MusicKit)'), ' ticked and download the .p8 file.'),
+            h('li', {}, 'Copy the Key ID shown next to the key, and your Team ID from the Membership page.'),
+            h('li', {}, 'Enter both here and choose the .p8 file.')),
+          h('p', { class: 'set-note' }, h('button', { class: 'text-btn', onclick: () => post('/api/open', { url: 'https://developer.apple.com/account/resources/authkeys/list' }) }, 'Open the Keys page at developer.apple.com')),
+          h('div', { class: 'fields' },
+            field('Team ID', team),
+            field('Key ID', key),
+            field('Private key', h('div', { class: 'key-row' },
+              h('span', { class: prefs.apple.hasKey ? '' : 'quiet' }, prefs.apple.hasKey ? 'Key saved (encrypted for your Windows account)' : 'No key chosen'),
+              button(prefs.apple.hasKey ? 'Replace…' : 'Choose .p8 file…', async () => {
+                await savePrefs({ appleTeamId: team.value, appleKeyId: key.value });
+                const res = await post('/api/pick-key');
+                if (res.error) toast(res.error, { ms: 6000 });
+                if (res.ok) { await savePrefs({}); draw(); }
+              })))),
+          h('div', { class: 'fields' },
+            field('Or paste a developer token', token, 'A token you made yourself. It is used in place of the key until you clear it.')),
+          h('div', { class: 'panel-actions' },
+            h('button', {
+              class: 'btn',
+              onclick: async () => {
+                if (busy) return;
+                busy = true;
+                try {
+                  const changes = { appleTeamId: team.value, appleKeyId: key.value };
+                  if (token.value.trim()) changes.appleToken = token.value;
+                  await savePrefs(changes);
+                  const ready = prefs.apple.hasToken || (prefs.apple.hasKey && prefs.apple.teamId && prefs.apple.keyId);
+                  if (!ready) { toast('Add the Team ID, the Key ID and the .p8 key first.'); return; }
+                  await reconnect();
+                } finally {
+                  busy = false;
+                  draw();
+                }
+              },
+            }, 'Save and connect'),
+            (prefs.apple.hasKey || prefs.apple.hasToken) && button('Clear', removeSetup)))));
   }
 
   // ---- YouTube Music ----
 
   let fetching = false;
   let working = null; // 'signin' | 'tokens' while one of those is under way
+  let ytdlpOpen = false;
 
   /** Runs one of the slower YouTube set-up steps, with its button showing that it is busy. */
   async function youtubeStep(name, step) {
@@ -2395,124 +3257,220 @@ function settingsView({ params } = {}) {
     }
   }
 
-  /** Premium's better audio takes two things: asking as the account that has Premium, and a token. */
-  function premiumParts(status) {
-    const signIn = status.signedIn && !status.expired
-      ? [
-        h('p', {}, 'Signed in to Google. yt-dlp asks YouTube as you, using a copy of the sign-in kept in a file in Tint\'s data folder.'),
-        h('div', { class: 'panel-actions' }, button('Sign out of Google', () => youtubeStep('signin', () => youtube.signOut()))),
-      ]
-      : [
-        status.expired && h('p', { class: 'warn' }, "Google has ended Tint's sign-in, so YouTube treats Tint as signed out: adverts and standard audio. Sign in again to get Premium back."),
-        h('p', {}, 'Sign in with the Google account that has YouTube Premium. Tint keeps a copy of that sign-in (YouTube\'s part of it only) in a file in its data folder, and yt-dlp asks YouTube as you.'),
-        h('p', { class: 'warn' }, "yt-dlp's makers warn that YouTube can restrict or close an account that is used this way."),
-        // In the browser-hosted build the sign-in window is a browser Tint can't see into, so it
-        // waits for the window to be closed.
-        working === 'signin' && window.tintBrowserHost
-          ? h('p', {}, 'Sign in in the window that opened. When YouTube Music shows there, close that window and Tint takes the sign-in from it.')
-          : null,
-        h('div', { class: 'panel-actions' },
-          h('button', {
-            class: 'btn primary', disabled: !!working,
-            onclick: () => youtubeStep('signin', async () => {
-              if (!await youtube.signIn()) toast("Tint didn't get a sign-in. If Google refused to sign you in in that window, Tint needs another way to get it.", { ms: 9000 });
-            }),
-          }, working === 'signin' ? 'Waiting for the sign-in window…' : 'Sign in to Google')),
-      ];
-
-    const helper = [
-      h('p', {}, status.tokens
-        ? 'The token helper is set up. It starts when a YouTube song is fetched and stops ten minutes after the last one.'
-        : 'YouTube Music also wants proof that a real player is asking. yt-dlp can\'t make that proof, so its guide recommends a helper that can. It is a download of about 190 MB, runs on Deno, and uses about 170 MB of memory while YouTube songs are being fetched.'),
-      !status.deno && h('p', { class: 'warn' }, "The helper runs on Deno, which isn't on this PC. Install Deno, then start Tint again."),
-      h('div', { class: 'panel-actions' },
-        h('button', {
-          class: 'btn', disabled: !!working || !status.deno,
-          onclick: () => youtubeStep('tokens', async () => { await youtube.installTokens(); toast('The token helper is set up.'); }),
-        }, working === 'tokens' ? 'Downloading, this takes a minute…' : status.tokens ? 'Update the token helper' : 'Set up the token helper')),
-    ];
-
-    let verdict = 'Signed out, YouTube sends its standard audio, about 128 kbps, and now and then refuses a song altogether.';
-    if (status.signedIn && status.tokens) verdict = 'Both parts are in place. A Premium account should now get about 256 kbps.';
-    else if (status.signedIn) verdict = 'Signed in, but without the token helper YouTube Music keeps its Premium audio back.';
-    else if (status.tokens) verdict = 'The helper is ready, but signed out YouTube sends its standard audio, about 128 kbps.';
-
-    const players = [['page', "YouTube Music's own player"], ['ytdlp', 'yt-dlp']];
-    const playWith = status.signedIn ? [
-      h('h3', {}, 'How songs are played'),
-      segmented('Play YouTube songs with', players, prefs.youtubePlayer === 'ytdlp' ? 'ytdlp' : 'page', (v) => savePrefs({ youtubePlayer: v })),
-      h('p', { class: 'quiet player-note' }, "YouTube Music's own player is the site itself, kept open out of sight. A song starts in about a second, at the audio quality set in your YouTube Music account (Tint sets it to High). yt-dlp takes several seconds a song, and is what plays a song the site's player can't."),
-    ] : [];
-
-    return [
-      ...playWith,
-      h('h3', {}, 'Premium audio'),
-      h('p', { class: 'quiet' }, verdict + ' While a YouTube song plays, the line under the progress bar says what is really being sent.'),
-      status.signedIn && h('p', { class: 'quiet' }, 'Your YouTube Music albums, songs and playlists are on the Albums, Songs and Playlists pages, under their own source.'),
-      ...signIn,
-      ...helper,
-    ];
-  }
-
   function youtubeSection() {
     const status = youtube.getStatus();
     let found = "Tint couldn't check whether yt-dlp is on this PC.";
-    if (status && !status.tool) found = "yt-dlp isn't installed. Sign in to Google to use YouTube Music's own player; install yt-dlp only if you want the alternative player and fallback.";
-    else if (status) found = `Using yt-dlp ${status.version || '(it was found, but it would not start)'}, ${status.tool === 'own' ? "Tint's own copy" : 'the copy installed on this PC'}.`;
+    if (status && !status.tool) found = "yt-dlp isn't installed. Sign in to Google to use YouTube Music's own player; install yt-dlp only if you want the fallback player.";
+    else if (status) found = `Using yt-dlp ${status.version || '(found, but would not start)'} (${status.tool === 'own' ? "Tint's own copy" : 'system PATH'}).`;
 
-    return h('section', { class: 'panel' },
-      h('h2', {}, 'YouTube Music'),
-      h('label', { class: 'check' },
-        h('input', { type: 'checkbox', checked: prefs.youtube, onchange: (e) => savePrefs({ youtube: e.target.checked }) }),
-        h('span', {},
-          h('span', {}, 'Search and play from YouTube Music'),
-          h('span', { class: 'quiet' }, "Search then also looks through YouTube Music's catalog. Sign in to play through YouTube Music's own player, or use the optional yt-dlp player."))),
-      h('p', { class: 'quiet youtube-found' }, found),
-      status?.tool && !status.runtime && h('p', { class: 'warn' }, "yt-dlp needs Deno or Node.js on this PC to read YouTube's player. Install either one, then start Tint again."),
-      h('p', { class: 'quiet' }, "YouTube changes often and an old yt-dlp stops working. If its songs stop playing, get the latest one here. Tint keeps that copy in its own data folder."),
-      h('div', { class: 'panel-actions' },
-        h('button', {
-          class: 'btn', disabled: fetching,
-          onclick: async () => {
-            if (fetching) return;
-            fetching = true;
+    const rows = [
+      setRow('Search & play from YouTube Music', "Include YouTube Music's catalog in search and open YouTube links.",
+        toggleSwitch(prefs.youtube, (e) => savePrefs({ youtube: e.target.checked }), { label: 'Search and play from YouTube Music' })),
+    ];
+
+    if (status) {
+      if (status.signedIn) {
+        rows.push(setRow('Playback engine', "YouTube Music's own player starts in about a second at High quality. yt-dlp acts as a fallback.",
+          segmented('Play YouTube songs with', [
+            ['page', "YouTube Music's player", 'youtubeMono'],
+            ['ytdlp', 'yt-dlp', 'terminal'],
+          ], prefs.youtubePlayer === 'ytdlp' ? 'ytdlp' : 'page', (v) => savePrefs({ youtubePlayer: v })),
+          { stack: true }));
+      }
+
+      let verdict = 'Signed out, YouTube sends standard audio (~128 kbps) and sometimes refuses songs.';
+      if (status.signedIn && status.tokens) verdict = 'Signed in with token helper ready. A Premium account gets ~256 kbps.';
+      else if (status.signedIn) verdict = 'Signed in to Google. Your YouTube Music library shows under Albums, Songs and Playlists.';
+      else if (status.tokens) verdict = 'Token helper is ready; sign in for Premium audio.';
+
+      rows.push(
+        status.signedIn && !status.expired
+          ? setRow('Google account', verdict, button('Sign out of Google', () => youtubeStep('signin', () => youtube.signOut())))
+          : h('div', { class: 'set-row is-stack' },
+            status.expired && h('p', { class: 'warn' }, "Google has ended Tint's sign-in, so YouTube treats Tint as signed out. Sign in again to get Premium back."),
+            h('div', { class: 'set-row-head' },
+              h('div', { class: 'set-lbl' },
+                h('b', {}, 'Google account'),
+                h('span', {}, verdict + " Sign in with the Google account that has YouTube Premium.")),
+              h('button', {
+                class: 'btn primary', disabled: !!working,
+                onclick: () => youtubeStep('signin', async () => {
+                  if (!await youtube.signIn()) toast("Tint didn't get a sign-in. If Google refused to sign you in in that window, Tint needs another way to get it.", { ms: 9000 });
+                }),
+              }, working === 'signin' ? 'Waiting…' : 'Sign in to Google')),
+            working === 'signin' && window.tintBrowserHost
+              ? h('p', { class: 'quiet' }, 'Sign in in the window that opened. When YouTube Music shows there, close that window and Tint takes the sign-in from it.')
+              : null,
+            h('p', { class: 'warn' }, "yt-dlp's makers warn that YouTube can restrict or close an account that is used this way.")));
+
+      rows.push(h('div', { class: 'set-row is-stack' },
+        h('details', { open: ytdlpOpen || (!!status.tool && !status.runtime), ontoggle: (e) => { ytdlpOpen = e.target.open; } },
+          h('summary', {}, 'yt-dlp & token helper (advanced / fallback)'),
+          h('p', { class: 'quiet set-note' }, found),
+          status.tool && !status.runtime && h('p', { class: 'warn set-note' }, "yt-dlp needs Deno or Node.js on this PC to read YouTube's player. Install either one, then start Tint again."),
+          h('div', { class: 'panel-actions' },
+            h('button', {
+              class: 'btn', disabled: fetching,
+              onclick: async () => {
+                if (fetching) return;
+                fetching = true;
+                draw();
+                try {
+                  await youtube.install();
+                  toast(`yt-dlp ${youtube.getStatus()?.version || ''} is ready.`);
+                } catch (e) {
+                  toast(e?.message || "yt-dlp couldn't be downloaded.", { ms: 6000 });
+                } finally {
+                  fetching = false;
+                  draw();
+                }
+              },
+            }, fetching ? 'Downloading…' : status.tool === 'own' ? 'Update yt-dlp' : 'Download latest yt-dlp'),
+            h('button', {
+              class: 'btn', disabled: !!working || !status.deno,
+              onclick: () => youtubeStep('tokens', async () => { await youtube.installTokens(); toast('The token helper is set up.'); }),
+            }, working === 'tokens' ? 'Downloading…' : status.tokens ? 'Update token helper' : 'Set up token helper')),
+          h('p', { class: 'quiet set-note' }, status.tokens
+            ? 'The token helper is set up. It starts when a YouTube song is fetched via yt-dlp and stops ten minutes after the last one.'
+            : 'The optional token helper (~190 MB, runs on Deno) lets yt-dlp prove a real player is asking for Premium audio.'),
+          !status.deno && h('p', { class: 'warn set-note' }, "The token helper runs on Deno, which isn't on this PC. Install Deno, then start Tint again."))));
+    }
+
+    return setSec('youtube', 'YouTube Music', 'youtubeMono', ...rows);
+  }
+
+  // ---- Spotify ----
+
+  let spotifyBusy = false;
+  let spotifyHelpOpen = false;
+
+  function spotifySection() {
+    const s = spotify.getStatus();
+    const redirectUri = s?.redirectUri || 'http://127.0.0.1:47813/spotify-callback';
+    const signedIn = !!s?.signedIn;
+    const configured = !!s?.configured;
+
+    const doSignIn = async () => {
+      if (spotifyBusy) return;
+      spotifyBusy = true;
+      draw();
+      try {
+        await spotify.signIn();
+        await savePrefs({});
+        toast('Signed in to Spotify');
+      } catch (e) {
+        toast(e?.message || 'Spotify sign-in was cancelled.', { ms: 6000 });
+      } finally {
+        spotifyBusy = false;
+        draw();
+      }
+    };
+
+    const removeSetup = async () => {
+      await spotify.signOut().catch(() => {});
+      await savePrefs({ forgetSpotify: true });
+      await spotify.init();
+      draw();
+    };
+
+    if (signedIn) {
+      const who = s.user ? `Signed in as ${s.user}.` : 'Signed in.';
+      const plan = s.premium === false
+        ? ' Your account does not show Spotify Premium — playback via the web player requires Premium.'
+        : ' Your Spotify library, playlists and full catalog are ready to play.';
+      return setSec('spotify', 'Spotify', 'spotifyMono',
+        setRow('Search & play from Spotify', 'Include your Spotify library in Albums, Songs, Playlists and Search.',
+          toggleSwitch(!!prefs.spotify?.enabled, async (e) => {
+            await savePrefs({ spotifyEnabled: e.target.checked });
+            await spotify.init();
             draw();
-            try {
-              await youtube.install();
-              toast(`yt-dlp ${youtube.getStatus()?.version || ''} is ready.`);
-            } catch (e) {
-              toast(e?.message || "yt-dlp couldn't be downloaded.", { ms: 6000 });
-            } finally {
-              fetching = false;
-              draw();
-            }
-          },
-        }, fetching ? 'Downloading…' : status?.tool === 'own' ? 'Update yt-dlp' : 'Download the latest yt-dlp')),
-      status ? premiumParts(status) : null);
+          }, { label: 'Search and play from Spotify' })),
+        s.premium === false && h('div', { class: 'set-row is-stack' },
+          h('p', { class: 'warn' }, 'Spotify Web Playback SDK requires an active Spotify Premium subscription.')),
+        setRow('Account', who + plan,
+          h('div', { class: 'set-inline-actions' },
+            button('Sign out', async () => { await spotify.signOut(); await savePrefs({}); draw(); }),
+            button('Remove setup', removeSetup))));
+    }
+
+    const clientIdInput = h('input', {
+      type: 'text',
+      value: s?.clientId || prefs.spotify?.clientId || '',
+      placeholder: '32-character Client ID',
+      maxLength: 64,
+      spellcheck: false,
+      autocomplete: 'off',
+    });
+
+    const saveAndSignIn = async () => {
+      const value = clientIdInput.value.trim();
+      if (!/^[a-f0-9]{20,64}$/i.test(value)) {
+        toast('Paste the Client ID from your Spotify Developer Dashboard app.');
+        return;
+      }
+      await savePrefs({ spotifyClientId: value, spotifyEnabled: true });
+      await spotify.init();
+      await doSignIn();
+    };
+
+    const rows = [];
+    if (s?.error) rows.push(h('div', { class: 'set-row is-stack' }, h('p', { class: 'warn' }, s.error)));
+
+    if (configured) {
+      rows.push(setRow('Sign in', 'Client ID saved. Sign in with your Spotify Premium account to browse your library and stream directly in Tint.',
+        h('div', { class: 'set-inline-actions' },
+          h('button', { class: 'btn primary', disabled: spotifyBusy, onclick: doSignIn }, spotifyBusy ? 'Waiting…' : 'Sign in to Spotify'),
+          button('Remove setup', removeSetup))));
+    }
+
+    rows.push(h('div', { class: 'set-row is-stack' },
+      field('Client ID', h('div', { class: 'id-row' },
+        clientIdInput,
+        h('button', { class: 'btn primary', disabled: spotifyBusy, onclick: saveAndSignIn }, spotifyBusy ? 'Waiting…' : configured ? 'Save & sign in' : 'Save & sign in')),
+        'Uses OAuth PKCE — no Client Secret needed. Your sign-in token is encrypted locally for your Windows account.'),
+      field('Redirect URI (add this in Spotify Dashboard)',
+        h('div', { class: 'key-row' },
+          h('span', { class: 'folder-path', title: redirectUri }, redirectUri),
+          button('Copy', () => copyText(redirectUri, 'Redirect URI copied')))),
+      h('details', { open: spotifyHelpOpen || !configured, ontoggle: (e) => { spotifyHelpOpen = e.target.open; } },
+        h('summary', {}, 'How to connect Spotify Premium (1 minute)'),
+        h('ol', { class: 'steps' },
+          h('li', {}, 'Open the Spotify Developer Dashboard and click ', h('strong', {}, 'Create app'), ' (any name, e.g. "Tint").'),
+          h('li', {}, 'Under ', h('strong', {}, 'Redirect URIs'), ', paste the Redirect URI shown above and tick ', h('strong', {}, 'Web API'), ' + ', h('strong', {}, 'Web Playback SDK'), ', then click ', h('strong', {}, 'Save'), '.'),
+          h('li', {}, 'Copy the app\'s ', h('strong', {}, 'Client ID'), ' from Settings, paste it above, and click ', h('strong', {}, 'Save & sign in'), '.')),
+        h('p', { class: 'set-note' },
+          h('button', { class: 'text-btn', onclick: () => post('/api/open', { url: 'https://developer.spotify.com/dashboard' }) }, 'Open the Spotify Developer Dashboard')))));
+
+    return setSec('spotify', 'Spotify', 'spotifyMono', ...rows);
   }
 
   // ---- Discord ----
 
-  const discordStatus = h('p', { class: 'quiet discord-status', 'aria-live': 'polite' });
+  const discordStatus = h('span', { class: 'discord-pill', 'aria-live': 'polite' });
+  let discordHelpOpen = false;
 
   async function drawDiscordStatus() {
     let text = '';
-    if (!prefs.discord.appId) text = 'Add an application ID to switch this on.';
-    else if (!prefs.discord.enabled) text = 'Switched off. Nothing is shared.';
+    let state = 'off';
+    if (!prefs.discord.appId) text = 'Add an application ID';
+    else if (!prefs.discord.enabled) text = 'Off';
     else {
       try {
         const s = await get('/api/discord/status');
         if (s.status === 'connected') {
-          text = s.user ? `Connected to Discord as ${s.user}.` : 'Connected to Discord.';
-          if (s.problem) text += ` Discord's last reply: ${s.problem}`;
+          state = 'on';
+          text = s.user ? `Connected as ${s.user}` : 'Connected';
+          if (s.problem) text += ` · ${s.problem}`;
         } else {
-          text = s.problem || 'Connecting to Discord…';
+          state = 'wait';
+          text = s.problem || 'Connecting…';
         }
       } catch {
         text = '';
       }
     }
     discordStatus.textContent = text;
+    discordStatus.dataset.state = state;
   }
 
   const discordTimer = setInterval(drawDiscordStatus, 2000);
@@ -2528,81 +3486,30 @@ function settingsView({ params } = {}) {
         toast('An application ID is a long number, like 1234567890123456789.');
         return;
       }
-      // Pasting an ID is a clear sign the person wants it on.
       await savePrefs(value ? { discordAppId: value, discordEnabled: true } : { discordAppId: '', discordEnabled: false });
       id.blur();
       draw();
     };
     drawDiscordStatus();
 
-    return h('section', { class: 'panel' },
-      h('h2', {}, 'Discord'),
-      h('label', { class: 'check' },
-        h('input', {
-          type: 'checkbox', checked: prefs.discord.enabled, disabled: !prefs.discord.appId,
-          onchange: async (e) => { await savePrefs({ discordEnabled: e.target.checked }); drawDiscordStatus(); },
-        }),
-        h('span', {},
-          h('span', {}, "Show what I'm listening to on Discord"),
-          h('span', { class: 'quiet' }, 'Your profile shows the song, the artist, the cover and a progress bar while music plays. It clears when you pause or close Tint.'))),
-      discordStatus,
-      h('p', {}, 'Discord shows a status under the name of an application, so this needs one of your own. It is free and takes about a minute.'),
-      h('ol', { class: 'steps' },
-        h('li', {}, 'Open the Discord Developer Portal and choose ', h('strong', {}, 'New Application'), '. The name you give it is shown on your profile above the song, so pick something like "Music" or "Tint".'),
-        h('li', {}, 'On its General Information page, copy the ', h('strong', {}, 'Application ID'), '.'),
-        h('li', {}, 'Paste it here and save.')),
-      h('p', {}, h('button', { class: 'text-btn', onclick: () => post('/api/open', { url: 'https://discord.com/developers/applications' }) }, 'Open the Discord Developer Portal')),
-      h('div', { class: 'fields' },
+    return setSec('discord', 'Discord', 'discordMono',
+      setRow("Show what I'm listening to",
+        h('span', { class: 'discord-desc' }, 'Shows song, artist, cover and progress bar while playing. ', discordStatus),
+        toggleSwitch(prefs.discord.enabled, async (e) => { await savePrefs({ discordEnabled: e.target.checked }); drawDiscordStatus(); },
+          { disabled: !prefs.discord.appId, label: "Show what I'm listening to on Discord" })),
+      h('div', { class: 'set-row is-stack' },
         field('Application ID', h('div', { class: 'id-row' }, id, button('Save', saveId, 'primary')),
-          'For songs stored on this PC, the cover is found by looking up the album name in Apple\'s public catalog.')));
+          'For local songs, covers are looked up in Apple\'s public catalog.'),
+        h('details', { open: discordHelpOpen || !prefs.discord.appId, ontoggle: (e) => { discordHelpOpen = e.target.open; } },
+          h('summary', {}, 'How to get a Discord Application ID'),
+          h('ol', { class: 'steps' },
+            h('li', {}, 'Open the Discord Developer Portal and choose ', h('strong', {}, 'New Application'), '. Its name appears on your profile above the song (e.g. "Music" or "Tint").'),
+            h('li', {}, 'On its General Information page, copy the ', h('strong', {}, 'Application ID'), '.'),
+            h('li', {}, 'Paste it above and save.')),
+          h('p', { class: 'set-note' }, h('button', { class: 'text-btn', onclick: () => post('/api/open', { url: 'https://discord.com/developers/applications' }) }, 'Open the Discord Developer Portal')))));
   }
 
-  /** A slider for a length of time, saved when let go. */
-  function duration(label, hint, key, max, step) {
-    const said = (ms) => (ms === 0 ? 'Off' : ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`);
-    const value = h('span', { class: 'quiet' }, said(prefs[key]));
-    const show = (input) => {
-      input.style.setProperty('--fill', `${(input.value / max) * 100}%`);
-      value.textContent = said(Number(input.value));
-    };
-    const input = h('input', {
-      type: 'range', class: 'slider', min: 0, max, step, value: prefs[key], 'aria-label': label,
-      oninput: (e) => show(e.target),
-      onchange: (e) => savePrefs({ [key]: Number(e.target.value) }),
-    });
-    show(input);
-    return h('div', { class: 'duration' },
-      h('div', { class: 'duration-head' }, h('span', { class: 'field-label' }, label), value),
-      input,
-      h('span', { class: 'quiet field-hint' }, hint));
-  }
-
-  function mainSection() {
-    return h('section', { class: 'panel' },
-      h('h2', {}, 'Main service'),
-      h('p', { class: 'quiet' }, "Where you listen most. Songs from a Spotify link are looked for there first, and on the other service when it doesn't have them."),
-      segmented('Main service', [['apple', 'Apple Music'], ['youtube', 'YouTube Music'], ['pc', 'Only this PC']], prefs.mainService || 'pc',
-        (v) => savePrefs({ mainService: v })));
-  }
-
-  function playbackSection() {
-    return h('section', { class: 'panel' },
-      h('h2', {}, 'Playback'),
-      duration('Fade when playing and pausing', 'A short fade instead of the sound cutting in and out.', 'pauseFadeMs', 1000, 10),
-      duration('Crossfade when skipping', 'How long a song you skip fades into the next. Two Apple Music songs, or two from the YouTube Music player, fade one after the other rather than over each other, since each of those players sounds one song at a time.', 'crossfadeMs', 5000, 100));
-  }
-
-  function lookSection() {
-    return h('section', { class: 'panel' },
-      h('h2', {}, 'Colors'),
-      h('label', { class: 'check' },
-        h('input', { type: 'checkbox', checked: prefs.keepDark, onchange: (e) => savePrefs({ keepDark: e.target.checked }) }),
-        h('span', {},
-          h('span', {}, 'Keep the window dark'),
-          h('span', { class: 'quiet' }, 'Normally a light cover gives you a light window. Turn this on to stay dark for every cover.'))));
-  }
-
-  // ---- what Tint keeps on this PC ----
+  // ---- Data & cache ----
   let cacheSize = null;
   const sizeText = (bytes) => (bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`);
   const loadCacheSize = () => pagecache.size().then((s) => { cacheSize = s; draw(); }, () => {});
@@ -2614,39 +3521,33 @@ function settingsView({ params } = {}) {
       : cacheSize.count ? `${plural(cacheSize.count, 'page')} kept, ${sizeText(cacheSize.bytes)}.`
         : 'Nothing kept yet.';
     const keep = [[7, '1 week'], [14, '2 weeks'], [30, '1 month'], [90, '3 months'], [365, '1 year'], [0, 'Never']];
-    return h('section', { class: 'panel' },
-      h('h2', {}, 'Saved data'),
-      h('p', {},
-        'Everything Tint keeps stays on this PC: saved playlists and tags, the songs played lately, and these settings. ',
-        "None of it is in an account, so to move it to another PC or keep it through a reinstall, export a backup and import it there. Sign-ins aren't part of it."),
-      h('div', { class: 'panel-actions' },
-        h('button', {
-          class: 'btn', disabled: exporting,
-          onclick: async () => {
-            exporting = true;
-            draw();
-            try {
-              exported = await backup.exportAll();
-              toast('Backup saved in Downloads');
-            } catch (e) {
-              toast(e?.message || "The backup couldn't be saved.", { ms: 6000 });
-            } finally {
-              exporting = false;
+    return setSec('data', 'Data & cache', 'database',
+      setRow('Backup & restore',
+        "Saved playlists, tags, play history and settings stay on this PC (sign-ins aren't included). Export to move to another PC.",
+        h('div', { class: 'set-inline-actions' },
+          h('button', {
+            class: 'btn', disabled: exporting,
+            onclick: async () => {
+              exporting = true;
               draw();
-            }
-          },
-        }, h('span', { class: 'btn-icon', icon: 'download' }), exporting ? 'Exporting…' : 'Export a backup'),
-        button('Import a backup', () => pickBackup(draw)),
-        exported && h('button', { class: 'text-btn', title: exported, onclick: () => backup.show(exported) }, 'Show the backup')),
-      h('p', { class: 'quiet cache-about' },
-        'Playlists and albums you open are also kept, so they open at once next time while Tint checks for changes. ' + summary),
-      h('div', { class: 'field cache-keep' },
-        h('span', { class: 'field-label' }, 'Forget pages not opened or played for'),
+              try {
+                exported = await backup.exportAll();
+                toast('Backup saved in Downloads');
+              } catch (e) {
+                toast(e?.message || "The backup couldn't be saved.", { ms: 6000 });
+              } finally {
+                exporting = false;
+                draw();
+              }
+            },
+          }, h('span', { class: 'btn-icon', icon: 'download' }), exporting ? 'Exporting…' : 'Export'),
+          button('Import', () => pickBackup(draw)),
+          exported && h('button', { class: 'text-btn', title: exported, onclick: () => backup.show(exported) }, 'Show file'))),
+      setRow('Keep opened pages for', 'Albums and playlists you open are cached so they load instantly. Saved playlists always keep their songs.',
         select('Forget pages not opened or played for', keep.map(([days, text]) => [String(days), text]), String(prefs.cacheKeepDays ?? 30),
-          async (v) => { await savePrefs({ cacheKeepDays: Number(v) }); loadCacheSize(); }),
-        h('span', { class: 'quiet field-hint' }, 'Playlists saved in Tint always keep their songs; only the extra copies are forgotten.')),
-      h('div', { class: 'panel-actions' },
-        button('Clear kept pages', async () => {
+          async (v) => { await savePrefs({ cacheKeepDays: Number(v) }); loadCacheSize(); })),
+      setRow('Cached pages', summary,
+        button('Clear cache', async () => {
           const { gone } = await pagecache.clear();
           toast(gone ? `Cleared ${plural(gone, 'page')}` : 'There was nothing to clear');
           loadCacheSize();
@@ -2657,43 +3558,175 @@ function settingsView({ params } = {}) {
 
   function updateSection() {
     const s = update.getStatus();
-    if (!s?.possible) return null;
-    const text = update.describe() || (checking ? 'Looking for a newer version…' : 'This is the newest version.');
-    return h('section', { class: 'panel' },
-      h('h2', {}, 'Updates'),
-      h('p', {}, `This is Tint ${s.current}. ${text}`),
-      s.state === 'downloading' && h('div', { class: 'update-bar' }, h('span', { style: { width: `${update.percent()}%` } })),
-      h('div', { class: 'panel-actions' },
-        update.actions(button),
-        s.state !== 'downloading' && s.state !== 'ready' && button('Check now', async () => {
-          checking = true;
-          draw();
-          await update.check(true);
-          checking = false;
-          draw();
-        }),
-        s.latest && s.page && h('button', { class: 'text-btn', onclick: update.openNotes }, "What's new")));
+    const version = s?.current ? `Tint ${s.current}` : 'Tint';
+    const canUpdate = !!s?.possible;
+    const downloading = canUpdate && s.state === 'downloading';
+    const ready = canUpdate && s.state === 'ready';
+    const pct = downloading ? update.percent() : ready ? 100 : null;
+    const text = canUpdate
+      ? (update.describe() || (checking ? 'Looking for a newer version…' : 'This is the newest version.'))
+      : 'Running a local build. Automatic updates are available in release builds.';
+    const sec = setSec('updates', 'Updates', 'refresh',
+      setRow(version, text,
+        h('div', { class: 'set-inline-actions' },
+          canUpdate && update.actions(button),
+          canUpdate && !downloading && !ready && button('Check now', async () => {
+            checking = true;
+            draw();
+            await update.check(true);
+            checking = false;
+            draw();
+          }),
+          downloading && h('span', { class: 'set-nav-pct' }, `${pct}%`),
+          canUpdate && s.latest && s.page && h('button', { class: 'text-btn', onclick: update.openNotes }, "What's new"),
+          !canUpdate && h('button', {
+            class: 'text-btn',
+            onclick: () => post('/api/open', { url: 'https://github.com/akaydevelop/TintMusicPlayer/releases' }),
+          }, 'Releases'))));
+    if (pct != null) {
+      const card = sec.querySelector('.set-card');
+      card.classList.add('is-progress');
+      if (ready) card.classList.add('is-done');
+      card.style.setProperty('--progress', `${pct}%`);
+    }
+    return sec;
   }
 
+  // Persistent search box so typing never loses focus across background refreshes.
+  const searchInput = h('input', {
+    type: 'search',
+    placeholder: 'Search settings',
+    autocomplete: 'off',
+    spellcheck: false,
+    'aria-label': 'Search settings',
+    oninput: (e) => { searchQuery = e.target.value; applyFilter(); },
+    onkeydown: (e) => { if (e.key === 'Escape' && searchInput.value) { searchInput.value = ''; searchQuery = ''; applyFilter(); } },
+  });
+  const searchWrap = h('label', { class: 'set-search' },
+    h('span', { class: 'search-icon', icon: 'search' }),
+    searchInput);
+  const topBar = h('header', { class: 'set-top' },
+    h('h1', {}, 'Settings'),
+    searchWrap);
+  const navEl = h('nav', { class: 'set-nav', 'aria-label': 'Settings sections' });
+  const mainEl = h('div', { class: 'set-main' });
+  const emptyMatch = h('p', { class: 'quiet set-empty', hidden: true }, 'No settings match that search.');
+  const bodyEl = h('div', { class: 'set-body' }, navEl, mainEl);
+  fill(el, topBar, bodyEl);
+
+  function setActiveNav(id) {
+    activeSec = id;
+    navEl.querySelectorAll('button').forEach((b) => b.classList.toggle('is-active', b.dataset.sec === id));
+  }
+
+  function applyFilter() {
+    const q = searchQuery.trim().toLowerCase();
+    const secs = [...mainEl.querySelectorAll('.set-sec')];
+    let matched = 0;
+    for (const sec of secs) {
+      if (!q) {
+        sec.hidden = false;
+        sec.querySelectorAll('.set-row').forEach((r) => { r.hidden = false; });
+        matched++;
+        continue;
+      }
+      const titleHit = sec.querySelector('.set-sec-head')?.textContent.toLowerCase().includes(q);
+      const rows = [...sec.querySelectorAll('.set-row')];
+      let anyRow = false;
+      for (const r of rows) {
+        const hit = titleHit || r.textContent.toLowerCase().includes(q);
+        r.hidden = !hit;
+        if (hit) anyRow = true;
+      }
+      sec.hidden = !anyRow;
+      if (anyRow) matched++;
+    }
+    navEl.querySelectorAll('button').forEach((b) => {
+      const sec = mainEl.querySelector(`#set-${b.dataset.sec}`);
+      b.hidden = !sec || sec.hidden;
+    });
+    emptyMatch.hidden = matched > 0;
+  }
+
+  function jumpTo(id, smooth = true) {
+    setActiveNav(id);
+    const target = mainEl.querySelector(`#set-${id}`);
+    if (!target) return;
+    target.scrollIntoView({ block: 'start', behavior: smooth && !matchMedia('(prefers-reduced-motion: reduce)').matches ? 'smooth' : 'auto' });
+  }
+
+  const onScroll = () => {
+    if (searchQuery.trim() || !scroller) return;
+    const top = scroller.getBoundingClientRect().top + 96;
+    const secs = [...mainEl.querySelectorAll('.set-sec')].filter((s) => !s.hidden);
+    let current = secs[0]?.dataset.sec;
+    for (const sec of secs) {
+      if (sec.getBoundingClientRect().top <= top) current = sec.dataset.sec;
+    }
+    if (current && current !== activeSec) setActiveNav(current);
+  };
+  scroller?.addEventListener('scroll', onScroll, { passive: true });
+
   function draw() {
-    // Typing shouldn't be interrupted by a background refresh.
-    if (el.contains(document.activeElement) && /INPUT|TEXTAREA/.test(document.activeElement.tagName)) return;
-    fill(el, pageHead('Settings'), mainSection(), foldersSection(), appleSection(), youtubeSection(), discordSection(), playbackSection(), lookSection(), cacheSection(), updateSection(),
-      h('p', { class: 'quiet about' }, `Tint${update.getStatus() ? ' ' + update.getStatus().current : ''}. Space plays and pauses, Ctrl+Right and Ctrl+Left change songs, Ctrl+F searches.`));
+    // Typing in a settings input shouldn't be interrupted by a background refresh.
+    if (mainEl.contains(document.activeElement) && /INPUT|TEXTAREA/.test(document.activeElement.tagName)) return;
+    const up = update.getStatus();
+    const upDownloading = !!(up?.possible && up.state === 'downloading');
+    const upReady = !!(up?.possible && up.state === 'ready');
+    const upPct = upDownloading ? update.percent() : upReady ? 100 : null;
+    const hasUpdate = !!(up?.possible && up.latest && !upDownloading && !upReady);
+    const sections = [
+      { id: 'updates', label: 'Updates', icon: 'refresh', el: updateSection(), progress: upPct, downloading: upDownloading, ready: upReady, dot: hasUpdate },
+      { id: 'general', label: 'General & library', icon: 'pc', el: generalSection() },
+      { id: 'appearance', label: 'Appearance', icon: 'palette', el: appearanceSection() },
+      { id: 'playback', label: 'Playback', icon: 'play', el: playbackSection() },
+      { id: 'apple', label: 'Apple Music', icon: 'appleMono', el: appleSection() },
+      { id: 'youtube', label: 'YouTube Music', icon: 'youtubeMono', el: youtubeSection() },
+      { id: 'spotify', label: 'Spotify', icon: 'spotifyMono', el: spotifySection() },
+      { id: 'discord', label: 'Discord', icon: 'discordMono', el: discordSection() },
+      { id: 'data', label: 'Data & cache', icon: 'database', el: cacheSection() },
+    ].filter((s) => s.el);
+
+    fill(navEl, sections.map((s) => {
+      const hasProgress = s.progress != null;
+      const btn = h('button', {
+        type: 'button',
+        class: 'set-nav-btn'
+          + (s.id === activeSec ? ' is-active' : '')
+          + (hasProgress ? ' has-progress' : '')
+          + (s.downloading ? ' is-downloading' : ''),
+        dataset: { sec: s.id },
+        onclick: () => jumpTo(s.id, true),
+      },
+        h('span', { class: 'set-nav-icon', icon: s.icon }),
+        h('span', {}, s.label),
+        s.downloading && h('span', { class: 'set-nav-pct' }, `${s.progress}%`),
+        s.ready && h('span', { class: 'set-nav-pct' }, 'Ready'),
+        s.dot && h('span', { class: 'set-nav-dot', 'aria-label': 'Update available' }));
+      if (hasProgress) btn.style.setProperty('--progress', `${s.progress}%`);
+      return btn;
+    }));
+
+    fill(mainEl,
+      ...sections.map((s) => s.el),
+      emptyMatch,
+      h('p', { class: 'quiet about' }, `Tint${update.getStatus() ? ' ' + update.getStatus().current : ''}. Space plays and pauses, Ctrl+Right and Ctrl+Left change songs, Ctrl+F searches. Product names and logos are trademarks of their owners.`));
+    applyFilter();
   }
 
   draw();
   loadCacheSize();
   // Opened at one section (#/settings/apple, say), as the welcome does.
-  const wanted = { apple: 'Apple Music', youtube: 'YouTube Music', data: 'Saved data' }[params?.[0]];
-  if (wanted) {
-    requestAnimationFrame(() => [...el.querySelectorAll('.panel > h2')].find((title) => title.textContent === wanted)
-      ?.parentElement.scrollIntoView({ block: 'start' }));
-  }
+  const wanted = { updates: 'updates', apple: 'apple', youtube: 'youtube', spotify: 'spotify', data: 'data' }[params?.[0]];
+  if (wanted) requestAnimationFrame(() => jumpTo(wanted, false));
+
   return {
     el,
     refresh: (why) => { if (why !== 'track') draw(); },
-    destroy: () => clearInterval(discordTimer),
+    destroy: () => {
+      clearInterval(discordTimer);
+      scroller?.removeEventListener('scroll', onScroll);
+    },
   };
 }
 
@@ -2715,7 +3748,10 @@ export const routes = {
   'artist/a': artistView('a'),
   'album/y': youtubeAlbumView,
   'playlist/y': youtubePlaylistView,
+  'artist/y': artistView('y'),
+  'album/s': spotifyAlbumView,
+  'playlist/s': spotifyPlaylistView,
+  'artist/s': artistView('s'),
   'playlist/t': tintPlaylistView,
   welcome: welcomeView,
-  'artist/y': artistView('y'),
 };

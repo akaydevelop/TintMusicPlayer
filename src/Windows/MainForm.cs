@@ -1,3 +1,4 @@
+using System.Drawing.Drawing2D;
 using System.Runtime.InteropServices;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
@@ -31,14 +32,20 @@ sealed class MainForm : Form, IHost
     long _chromeStart;
     const int ChromeMs = 900;
 
+    // Live taskbar & Alt+Tab icon handles, re-rendered in the song's cover palette.
+    IntPtr _smallIcon;
+    IntPtr _bigIcon;
+    (Color raise, Color deep, Color ink, Color accent)? _iconPalette;
+
     bool _mini;
     Rectangle _fullBounds;
     bool _fullMaximized;
 
-    public MainForm(bool dev, Updater updater)
+    public MainForm(bool dev, Updater updater, string? initialLink = null)
     {
         _dev = dev;
         _settings = Settings.Load();
+        if (_settings.HandleLinks) LinkHandler.Sync(true, _settings.HandleAppLinks);
         _library = new Library(_settings);
 
         Text = "Tint";
@@ -55,7 +62,21 @@ sealed class MainForm : Form, IHost
 
         _discord = new DiscordPresence(_settings, _library.Covers);
         _server = new LocalServer(this, _settings, _library, new AppleToken(_settings), _discord, _youtube, updater, Paths.WebRoot(dev));
+        if (!string.IsNullOrEmpty(initialLink)) _server.EnqueueLink(initialLink);
         _chromeTimer.Tick += (_, _) => StepChrome();
+    }
+
+    /// <summary>Delivers a link received from another app into the running page.</summary>
+    public void OpenExternalLink(string url)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return;
+        _server.EnqueueLink(url);
+        try
+        {
+            var payload = System.Text.Json.JsonSerializer.Serialize(new { @is = "open-link", url });
+            _web.CoreWebView2?.PostWebMessageAsJson(payload);
+        }
+        catch { }
     }
 
     protected override async void OnLoad(EventArgs e)
@@ -99,10 +120,17 @@ sealed class MainForm : Form, IHost
             _environment = environment;
             // The browser starts its audio process with the first sound, and starts a new one if that one stops.
             environment.ProcessInfosChanged += (_, _) => { if (_playing) NameInMixer(); };
-            // Tint's page works the hidden YouTube Music page by messages; this is the way there.
+            // Tint's page works the hidden YouTube Music page and native window chrome by messages.
             core.WebMessageReceived += (_, args) =>
             {
-                if (args.Source.StartsWith(PageBridge.Base, StringComparison.OrdinalIgnoreCase)) _youtubePage?.Tell(args.WebMessageAsJson);
+                if (!args.Source.StartsWith(PageBridge.Base, StringComparison.OrdinalIgnoreCase)) return;
+                var json = args.WebMessageAsJson;
+                if (json.Contains("\"to\":\"window\"", StringComparison.Ordinal))
+                {
+                    HandleWindowMessage(json);
+                    return;
+                }
+                _youtubePage?.Tell(json);
             };
             core.NewWindowRequested += OnNewWindowRequested;
             _bridge = new PageBridge(core, environment, _server, _library);
@@ -283,6 +311,57 @@ sealed class MainForm : Form, IHost
                 core.CookieManager.DeleteCookie(cookie);
     }
 
+    /// <summary>Opens Spotify's OAuth sign-in in a child window and closes it once the loopback callback lands.</summary>
+    public Task<bool> SpotifySignIn(string authorizeUrl, Task<bool> completed)
+    {
+        var done = new TaskCompletionSource<bool>();
+        if (_environment == null) return Task.FromResult(false);
+
+        var window = new SignInWindow(this, Scale(new Size(520, 740)), "Spotify");
+        window.FormClosed += (_, _) => done.TrySetResult(false);
+        _ = completed.ContinueWith(t =>
+        {
+            bool ok = t.IsCompletedSuccessfully && t.Result;
+            done.TrySetResult(ok);
+            OnUi(() => { if (!window.IsDisposed) window.Close(); });
+        }, TaskScheduler.Default);
+        window.Show(this);
+        _ = Open();
+        return done.Task;
+
+        async Task Open()
+        {
+            try
+            {
+                await window.Web.EnsureCoreWebView2Async(_environment);
+                var core = window.Web.CoreWebView2;
+                core.Settings.AreDevToolsEnabled = _dev;
+                core.Settings.IsStatusBarEnabled = false;
+                core.Settings.IsPasswordAutosaveEnabled = false;
+                core.DocumentTitleChanged += (_, _) => window.Text = string.IsNullOrWhiteSpace(core.DocumentTitle) ? "Spotify" : core.DocumentTitle;
+                core.WindowCloseRequested += (_, _) => window.Close();
+                core.NavigationStarting += (_, args) =>
+                {
+                    bool allowed = args.Uri == "about:blank"
+                        || args.Uri.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
+                        || args.Uri.StartsWith(_server.Origin + "/spotify-callback", StringComparison.OrdinalIgnoreCase);
+                    if (!allowed) args.Cancel = true;
+                };
+                core.NewWindowRequested += (_, args) =>
+                {
+                    args.Handled = true;
+                    if (args.Uri.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(args.Uri) { UseShellExecute = true });
+                };
+                core.Navigate(authorizeUrl);
+            }
+            catch
+            {
+                window.Close();
+            }
+        }
+    }
+
     sealed class SignInWindow : Form
     {
         public WebView2 Web { get; } = new() { Dock = DockStyle.Fill };
@@ -314,11 +393,13 @@ sealed class MainForm : Form, IHost
     // The server asks from its own threads; the window answers on its own.
     Task<string?> IHost.PickFolder() => Task.FromResult(OnUi(PickFolder));
     Task<string?> IHost.PickKeyFile() => Task.FromResult(OnUi(PickKeyFile));
-    void IHost.TintChrome(Color background, Color text, bool instant) => OnUi(() => TintChrome(background, text, instant));
+    void IHost.TintChrome(Color background, Color text, Color accent, Color raise, Color deep, bool instant) =>
+        OnUi(() => TintChrome(background, text, accent, raise, deep, instant));
     void IHost.SetMini(bool on) => OnUi(() => SetMini(on));
     Task<bool> IHost.YouTubeSignIn() => OnUi(YouTubeSignIn);
     Task IHost.YouTubeSignOut() => OnUi(YouTubeSignOut);
     Task<bool> IHost.OpenYouTubePage(bool again) => OnUi(() => OpenYouTubePage(again));
+    Task<bool> IHost.SpotifySignIn(string authorizeUrl, Task<bool> completed) => OnUi(() => SpotifySignIn(authorizeUrl, completed));
     void IHost.ShowNowPlaying(SystemTrack? track, bool playing, long at) => OnUi(() => ShowNowPlaying(track, playing, at));
 
     public void OnUi(Action action)
@@ -404,9 +485,42 @@ sealed class MainForm : Form, IHost
 
     const int WM_SETTINGCHANGE = 0x001A;
     const int WM_COMMAND = 0x0111;
+    const int WM_NCCALCSIZE = 0x0083;
+    const int WM_NCLBUTTONDOWN = 0x00A1;
+    const int WM_SIZE = 0x0005;
+    const int HTCAPTION = 2;
+    const int SM_CXSIZEFRAME = 32;
+    const int SM_CYSIZEFRAME = 33;
+    const int SM_CXPADDEDBORDER = 92;
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        // Keep a 1px DWM glass margin so Windows 11 preserves rounded corners and drop shadow
+        // even though WM_NCCALCSIZE removes the solid opaque title bar.
+        var margins = new MARGINS { top = 1 };
+        DwmExtendFrameIntoClientArea(Handle, ref margins);
+        if (_iconPalette is { } p) UpdateTaskbarIcon(p.raise, p.deep, p.ink, p.accent);
+    }
 
     protected override void WndProc(ref Message m)
     {
+        if (m.Msg == WM_NCCALCSIZE && m.WParam != IntPtr.Zero)
+        {
+            var nc = Marshal.PtrToStructure<NCCALCSIZE_PARAMS>(m.LParam);
+            uint dpi = (uint)Math.Max(96, DeviceDpi);
+            int pad = GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+            int bx = GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi) + pad;
+            int by = GetSystemMetricsForDpi(SM_CYSIZEFRAME, dpi) + pad;
+            nc.rgrc0.left += bx;
+            nc.rgrc0.right -= bx;
+            nc.rgrc0.bottom -= by;
+            if (WindowState == FormWindowState.Maximized) nc.rgrc0.top += by;
+            Marshal.StructureToPtr(nc, m.LParam, false);
+            m.Result = IntPtr.Zero;
+            return;
+        }
+        if (m.Msg == WM_SIZE) PostWindowState();
         if (m.Msg == TaskbarButtons.Created) _taskbar.Attach(Handle, DeviceDpi);
         else if (m.Msg == WM_SETTINGCHANGE) _taskbar.Restyle(DeviceDpi);
         else if (m.Msg == WM_COMMAND && TaskbarButtons.CommandFor(m.WParam) is { } command)
@@ -416,6 +530,63 @@ sealed class MainForm : Form, IHost
         }
         base.WndProc(ref m);
     }
+
+    void HandleWindowMessage(string json)
+    {
+        if (json.Contains("\"do\":\"drag\"", StringComparison.Ordinal))
+        {
+            ReleaseCapture();
+            SendMessage(Handle, WM_NCLBUTTONDOWN, (IntPtr)HTCAPTION, IntPtr.Zero);
+        }
+        else if (json.Contains("\"do\":\"min\"", StringComparison.Ordinal))
+        {
+            WindowState = FormWindowState.Minimized;
+        }
+        else if (json.Contains("\"do\":\"max\"", StringComparison.Ordinal))
+        {
+            WindowState = WindowState == FormWindowState.Maximized ? FormWindowState.Normal : FormWindowState.Maximized;
+            PostWindowState();
+        }
+        else if (json.Contains("\"do\":\"close\"", StringComparison.Ordinal))
+        {
+            Close();
+        }
+        else if (json.Contains("\"do\":\"ready\"", StringComparison.Ordinal))
+        {
+            PostWindowState();
+        }
+    }
+
+    void PostWindowState()
+    {
+        try
+        {
+            bool max = WindowState == FormWindowState.Maximized;
+            _web.CoreWebView2?.PostWebMessageAsJson($"{{\"is\":\"window\",\"maximized\":{(max ? "true" : "false")}}}");
+        }
+        catch { }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct RECT { public int left, top, right, bottom; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct NCCALCSIZE_PARAMS { public RECT rgrc0, rgrc1, rgrc2; public IntPtr lppos; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct MARGINS { public int left, right, top, bottom; }
+
+    [DllImport("dwmapi.dll")]
+    static extern int DwmExtendFrameIntoClientArea(IntPtr hwnd, ref MARGINS margins);
+
+    [DllImport("user32.dll")]
+    static extern int GetSystemMetricsForDpi(int nIndex, uint dpi);
+
+    [DllImport("user32.dll")]
+    static extern bool ReleaseCapture();
+
+    [DllImport("user32.dll")]
+    static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 
     /// <summary>Switches between the full window and a small always-on-top player.</summary>
     public void SetMini(bool on)
@@ -461,10 +632,11 @@ sealed class MainForm : Form, IHost
         _mini = on;
     }
 
-    // ---- title bar colour ------------------------------------------------------------------------
+    // ---- title bar colour & live taskbar icon -----------------------------------------------------
 
-    public void TintChrome(Color background, Color text, bool instant)
+    public void TintChrome(Color background, Color text, Color accent, Color raise, Color deep, bool instant)
     {
+        UpdateTaskbarIcon(raise, deep, text, accent);
         if (instant)
         {
             _chromeTimer.Stop();
@@ -476,6 +648,100 @@ sealed class MainForm : Form, IHost
         _chromeStart = Environment.TickCount64;
         _chromeTimer.Start();
     }
+
+    void UpdateTaskbarIcon(Color raise, Color deep, Color ink, Color accent)
+    {
+        var next = (raise, deep, ink, accent);
+        if (_iconPalette == next && _bigIcon != IntPtr.Zero) return;
+        _iconPalette = next;
+        if (!IsHandleCreated) return;
+
+        int smallSz = Math.Max(16, 16 * DeviceDpi / 96);
+        int bigSz = Math.Max(48, 48 * DeviceDpi / 96);
+        IntPtr newSmall = RenderTintedIconHandle(smallSz, raise, deep, ink, accent);
+        IntPtr newBig = RenderTintedIconHandle(bigSz, raise, deep, ink, accent);
+
+        SendMessage(Handle, WM_SETICON, (IntPtr)ICON_SMALL, newSmall);
+        SendMessage(Handle, WM_SETICON, (IntPtr)ICON_BIG, newBig);
+
+        if (_smallIcon != IntPtr.Zero) DestroyIcon(_smallIcon);
+        if (_bigIcon != IntPtr.Zero) DestroyIcon(_bigIcon);
+        _smallIcon = newSmall;
+        _bigIcon = newBig;
+    }
+
+    static IntPtr RenderTintedIconHandle(int size, Color raise, Color deep, Color ink, Color accent)
+    {
+        using var bmp = new Bitmap(size, size, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+        using var g = Graphics.FromImage(bmp);
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+        g.Clear(Color.Transparent);
+        float s = size / 256f;
+        g.ScaleTransform(s, s);
+
+        // Tinted rounded-square badge
+        const float bx = 14f, by = 14f, bw = 228f, bh = 228f, br = 108f;
+        using var bgPath = new GraphicsPath();
+        bgPath.AddArc(bx, by, br, br, 180, 90);
+        bgPath.AddArc(bx + bw - br, by, br, br, 270, 90);
+        bgPath.AddArc(bx + bw - br, by + bh - br, br, br, 0, 90);
+        bgPath.AddArc(bx, by + bh - br, br, br, 90, 90);
+        bgPath.CloseFigure();
+
+        using var bgBrush = new LinearGradientBrush(new PointF(36, 20), new PointF(220, 240), raise, deep);
+        g.FillPath(bgBrush, bgPath);
+
+        using var rimPen = new Pen(Color.FromArgb(38, ink), 4f);
+        g.DrawPath(rimPen, bgPath);
+
+        using var inkBrush = new SolidBrush(ink);
+        using var ferruleBrush = new SolidBrush(Color.FromArgb(140, ink));
+        using var accentBrush = new SolidBrush(accent);
+
+        g.TranslateTransform(2f, 2f);
+
+        // Eighth-note stem and sweeping flag (tinted monochrome ink)
+        using var flag = new GraphicsPath();
+        flag.AddLine(124, 126, 124, 42);
+        flag.AddBezier(124, 42, 124, 37, 129, 34, 134, 37);
+        flag.AddBezier(134, 37, 158, 52, 190, 69, 200, 103);
+        flag.AddBezier(200, 103, 205, 120, 201, 137, 191, 150);
+        flag.AddBezier(191, 150, 192, 132, 186, 115, 171, 103);
+        flag.AddBezier(171, 103, 161, 95, 152, 90, 146, 87);
+        flag.AddLine(146, 87, 146, 126);
+        flag.CloseFigure();
+        g.FillPath(inkBrush, flag);
+
+        // Brush ferrule collar
+        const float fx = 117f, fy = 134f, fw = 36f, fh = 15f, fr = 10f;
+        using var fPath = new GraphicsPath();
+        fPath.AddArc(fx, fy, fr, fr, 180, 90);
+        fPath.AddArc(fx + fw - fr, fy, fr, fr, 270, 90);
+        fPath.AddArc(fx + fw - fr, fy + fh - fr, fr, fr, 0, 90);
+        fPath.AddArc(fx, fy + fh - fr, fr, fr, 90, 90);
+        fPath.CloseFigure();
+        g.FillPath(ferruleBrush, fPath);
+
+        // Round notehead brush tip dipped in the song's accent colour
+        using var tip = new GraphicsPath();
+        tip.AddLine(117, 157, 153, 157);
+        tip.AddBezier(153, 157, 162, 185, 147, 219, 116, 223);
+        tip.AddBezier(116, 223, 91, 226, 70, 214, 58, 197);
+        tip.AddBezier(58, 197, 68, 194, 74, 186, 78, 175);
+        tip.AddBezier(78, 175, 84, 160, 99, 157, 117, 157);
+        tip.CloseFigure();
+        g.FillPath(accentBrush, tip);
+
+        return bmp.GetHicon();
+    }
+
+    const int WM_SETICON = 0x0080;
+    const int ICON_SMALL = 0;
+    const int ICON_BIG = 1;
+
+    [DllImport("user32.dll", SetLastError = true)]
+    static extern bool DestroyIcon(IntPtr hIcon);
 
     void StepChrome()
     {
@@ -572,6 +838,8 @@ sealed class MainForm : Form, IHost
             _server.Dispose();
             _library.Dispose();
         }
+        if (_smallIcon != IntPtr.Zero) { DestroyIcon(_smallIcon); _smallIcon = IntPtr.Zero; }
+        if (_bigIcon != IntPtr.Zero) { DestroyIcon(_bigIcon); _bigIcon = IntPtr.Zero; }
         base.Dispose(disposing);
     }
 }

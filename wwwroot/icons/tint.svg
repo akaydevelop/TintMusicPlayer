@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="36" y1="20" x2="220" y2="240" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#242429"/>
+      <stop offset="1" stop-color="#111114"/>
+    </linearGradient>
+  </defs>
+  <rect x="14" y="14" width="228" height="228" rx="54" fill="url(#bg)"/>
+  <g transform="translate(2 2)">
+    <!-- Eighth-note stem and sweeping flag -->
+    <path d="M124 126 V42 C124 37 129 34 134 37 C158 52 190 69 200 103 C205 120 201 137 191 150 C192 132 186 115 171 103 C161 95 152 90 146 87 V126 Z" fill="#f6f6f8"/>
+    <!-- Brush ferrule collar -->
+    <rect x="117" y="134" width="36" height="15" rx="5" fill="#f6f6f8" opacity="0.56"/>
+    <!-- Round notehead belly tapering into a paintbrush tip -->
+    <path d="M117 157 H153 C162 185 147 219 116 223 C91 226 70 214 58 197 C68 194 74 186 78 175 C84 160 99 157 117 157 Z" fill="#f6f6f8"/>
+  </g>
+</svg>

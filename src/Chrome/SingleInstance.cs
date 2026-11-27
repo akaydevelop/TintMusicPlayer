@@ -1,10 +1,12 @@
 using System.Net.Sockets;
+using System.Text;
 
 namespace Tint;
 
 /// <summary>
 /// One Tint per person: the first to start listens on a socket file in Tint's data folder, and a
-/// second start only knocks there, which brings the first one's window forward, and then quits.
+/// second start only knocks there (optionally passing an incoming link), which brings the first
+/// one's window forward, and then quits.
 /// </summary>
 sealed class SingleInstance : IDisposable
 {
@@ -12,6 +14,7 @@ sealed class SingleInstance : IDisposable
     readonly string _path;
 
     public event Action? Woken;
+    public event Action<string>? LinkReceived;
 
     SingleInstance(Socket listener, string path)
     {
@@ -21,7 +24,7 @@ sealed class SingleInstance : IDisposable
     }
 
     /// <summary>This process's claim to be the one Tint, or null when another holds it (and has been woken).</summary>
-    public static SingleInstance? Claim()
+    public static SingleInstance? Claim(string? link = null)
     {
         var path = Path.Combine(Paths.Data, "instance.sock");
         var address = new UnixDomainSocketEndPoint(path);
@@ -30,7 +33,8 @@ sealed class SingleInstance : IDisposable
         {
             using var knock = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
             knock.Connect(address);
-            knock.Send("wake"u8);
+            var payload = string.IsNullOrEmpty(link) ? "wake" : "link:" + link;
+            knock.Send(Encoding.UTF8.GetBytes(payload));
             return null;
         }
         catch (SocketException)
@@ -47,11 +51,23 @@ sealed class SingleInstance : IDisposable
 
     async Task Listen()
     {
+        var buf = new byte[4096];
         while (true)
         {
             try
             {
                 using var visitor = await _listener.AcceptAsync();
+                int n = 0;
+                try { n = await visitor.ReceiveAsync(buf); } catch { }
+                if (n > 5)
+                {
+                    var msg = Encoding.UTF8.GetString(buf, 0, n);
+                    if (msg.StartsWith("link:", StringComparison.Ordinal))
+                    {
+                        var url = msg[5..].Trim();
+                        if (url.Length > 0) LinkReceived?.Invoke(url);
+                    }
+                }
                 Woken?.Invoke();
             }
             catch (ObjectDisposedException) { return; }

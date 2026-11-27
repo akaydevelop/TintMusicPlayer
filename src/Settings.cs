@@ -9,6 +9,11 @@ sealed class Settings
     public List<string> Folders { get; set; } = new();
     public bool FoldersInitialized { get; set; }
     public bool KeepDark { get; set; }
+    public bool CoverBackdrop { get; set; }
+    /// <summary>Opt-in test feature: register tint:// protocol handler so other apps can open links in Tint.</summary>
+    public bool HandleLinks { get; set; }
+    /// <summary>Opt-in test feature: also handle spotify:, music:, and itmss: links in Tint.</summary>
+    public bool HandleAppLinks { get; set; }
 
     public string? AppleTeamId { get; set; }
     public string? AppleKeyId { get; set; }
@@ -28,6 +33,13 @@ sealed class Settings
     public bool YouTubeEnabled { get; set; }
     /// <summary>"page" plays YouTube songs in the site's own player, kept open out of sight; "ytdlp" always fetches them with yt-dlp.</summary>
     public string YouTubePlayer { get; set; } = "page";
+
+    /// <summary>Search Spotify's catalog, browse library and play natively with Spotify Premium.</summary>
+    public bool SpotifyEnabled { get; set; }
+    /// <summary>Client ID from the user's Spotify Developer Dashboard app (PKCE, no secret needed).</summary>
+    public string? SpotifyClientId { get; set; }
+    /// <summary>OAuth refresh token for Spotify, kept with Protect.</summary>
+    public string? SpotifyRefreshTokenProtected { get; set; }
 
     /// <summary>How long playing and pausing fade in and out, in milliseconds (0 cuts straight away).</summary>
     public int PauseFadeMs { get; set; } = 150;

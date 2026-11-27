@@ -53,38 +53,98 @@ function hexToLch(hex) {
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
+function hexToRgb(hex) {
+  const n = parseInt(hex.replace('#', ''), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+function luminance(hex) {
+  const [r, g, b] = hexToRgb(hex).map((c) => toLinear(c / 255));
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+function contrastRatio(a, b) {
+  const la = luminance(a), lb = luminance(b);
+  return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+}
+
+/**
+ * Picks a vibrant accent in OKLCH without washing rich reds/blues into pastel, while guaranteeing
+ * readable contrast against `bg` and choosing the sharper dark or light foreground for `onAccent`.
+ */
+function vibrantAccent(acc, bg, mode) {
+  // Hue-aware lightness floor: yellows/ambers/greens turn muddy brown below L=0.72, while reds,
+  // magentas and blues hit peak sRGB chroma around L=0.57-0.64.
+  const h = ((acc.h % 360) + 360) % 360;
+  const minDarkL = h >= 48 && h <= 170 ? 0.74 : 0.57;
+  const targetC = clamp(Math.max(acc.c * 1.3, 0.17), 0.16, 0.27);
+  let L = mode === 'dark' ? clamp(acc.l, minDarkL, 0.87) : clamp(acc.l, 0.42, 0.55);
+  let accent = oklch(L, targetC, acc.h);
+
+  // Nudge lightness only as far as needed so buttons, sliders and indicators pop cleanly on the window ground.
+  const minOnBg = mode === 'dark' ? 3.8 : 4.5;
+  for (let i = 0; i < 16 && contrastRatio(accent, bg) < minOnBg; i++) {
+    L = mode === 'dark' ? Math.min(0.88, L + 0.02) : Math.max(0.32, L - 0.02);
+    accent = oklch(L, targetC, acc.h);
+  }
+
+  const darkInk = oklch(0.16, 0.04, acc.h);
+  const lightInk = '#ffffff';
+  const lightC = contrastRatio(lightInk, accent);
+  // Crisp white looks cleaner on rich reds/blues/magentas; bright greens/yellows/ambers take dark ink.
+  const onAccent = lightC >= 3.4 ? lightInk : darkInk;
+  return { accent, onAccent };
+}
+
 // ---- reading a cover ----------------------------------------------------------------------------
 
-const SAMPLE = 40;
+const SAMPLE = 64;
 const canvas = document.createElement('canvas');
 canvas.width = canvas.height = SAMPLE;
 const ctx = canvas.getContext('2d', { willReadFrequently: true });
 const cache = new Map();
 
+function hueDistance(a, b) {
+  const d = Math.abs((((a - b) % 360) + 360) % 360);
+  return d > 180 ? 360 - d : d;
+}
+
 /**
- * Finds the cover's dominant colour (what most of it is) and its accent (the most vivid colour
- * that still covers a real part of it). Pixels are grouped into coarse lightness/chroma/hue bins
- * and each bin is averaged.
+ * Finds the cover's dominant colour (what most of it is) and its accent (preferring a vivid
+ * contrasting highlight — including small focal colour spots on monochrome art, like a red eye on
+ * a black-and-white cover — and falling back to the dominant hue when the art has no colour).
  */
 function extract(pixels) {
-  const bins = new Map();
+  const domBins = new Map();
+  const hueBins = new Map();
   let total = 0;
   for (let i = 0; i < pixels.length; i += 4) {
     if (pixels[i + 3] < 128) continue;
     const [L, a, b] = rgbToOklab(pixels[i], pixels[i + 1], pixels[i + 2]);
     const C = Math.hypot(a, b);
-    const key = C < 0.03
+    const H = ((Math.atan2(b, a) * 180) / Math.PI + 360) % 360;
+    const domKey = C < 0.03
       ? 1000 + Math.round(L * 4)
-      : Math.round(L * 4) * 100 + Math.min(3, Math.floor(C / 0.06)) * 20 + Math.floor((((Math.atan2(b, a) * 180) / Math.PI + 360) % 360) / 30);
-    let bin = bins.get(key);
-    if (!bin) bins.set(key, (bin = { L: 0, a: 0, b: 0, n: 0 }));
+      : Math.round(L * 4) * 100 + Math.min(3, Math.floor(C / 0.06)) * 20 + Math.floor(H / 30);
+    let bin = domBins.get(domKey);
+    if (!bin) domBins.set(domKey, (bin = { L: 0, a: 0, b: 0, n: 0 }));
     bin.L += L; bin.a += a; bin.b += b; bin.n++;
+
+    // Group coloured pixels by hue slice so small focal accents aren't shattered across L/C sub-bins.
+    if (C >= 0.035) {
+      const hKey = Math.floor(H / 30);
+      let hb = hueBins.get(hKey);
+      if (!hb) hueBins.set(hKey, (hb = { L: 0, a: 0, b: 0, w: 0, n: 0, peakC: 0 }));
+      const w = C * C;
+      hb.L += L * w; hb.a += a * w; hb.b += b * w; hb.w += w; hb.n++;
+      if (C > hb.peakC) hb.peakC = C;
+    }
     total++;
   }
   if (!total) return null;
 
-  let dominant = null, accent = null, accentScore = 0;
-  for (const bin of bins.values()) {
+  let dominant = null;
+  for (const bin of domBins.values()) {
     const swatch = {
       l: bin.L / bin.n,
       c: Math.hypot(bin.a / bin.n, bin.b / bin.n),
@@ -92,10 +152,29 @@ function extract(pixels) {
       share: bin.n / total,
     };
     if (!dominant || swatch.share > dominant.share) dominant = swatch;
-    if (swatch.share < 0.012) continue;
-    // Very dark and very light pixels carry little usable colour, so they count for less.
-    const usable = swatch.l > 0.3 && swatch.l < 0.92 ? 1 : 0.55;
-    const score = swatch.c * swatch.share ** 0.25 * usable;
+  }
+
+  let accent = null, accentScore = 0;
+  const domColored = dominant.c >= 0.035;
+  for (const hb of hueBins.values()) {
+    const share = hb.n / total;
+    if (share < 0.002) continue;
+    const swatch = {
+      l: hb.L / hb.w,
+      c: Math.hypot(hb.a / hb.w, hb.b / hb.w),
+      h: (Math.atan2(hb.b / hb.w, hb.a / hb.w) * 180) / Math.PI,
+      share,
+    };
+    const usable = swatch.l > 0.25 && swatch.l < 0.94 ? 1 : 0.45;
+    const dh = domColored ? hueDistance(swatch.h, dominant.h) : 0;
+    let contrastBoost = 1;
+    if (!domColored && hb.peakC >= 0.055) {
+      contrastBoost = 2.8;
+    } else if (domColored && swatch.c >= 0.065 && dh >= 35) {
+      contrastBoost = 1 + Math.min(1.8, ((dh - 25) / 90) * 1.5) * (dominant.l < 0.45 && swatch.l > 0.5 ? 1.35 : 1);
+    }
+    const lightPop = dominant.l < 0.45 && swatch.l > 0.55 && swatch.c >= 0.09 ? 1.35 : 1;
+    const score = swatch.c * share ** 0.18 * usable * contrastBoost * lightPop;
     if (score > accentScore) { accentScore = score; accent = swatch; }
   }
   return { dom: dominant, acc: accent || dominant };
@@ -139,7 +218,7 @@ export async function paletteOf(art) {
 export const IDLE_THEME = {
   mode: 'dark',
   bg: '#14262b', deep: '#0e1c20', raise: '#1e353b',
-  ink: '#edf2ef', dim: '#9db1b0',
+  ink: '#edf2ef', dim: '#a4b8b7',
   accent: '#f0b254', onAccent: '#2a1c05',
 };
 
@@ -160,29 +239,37 @@ export function themeFrom(palette, { keepDark = false } = {}) {
   if (dom.l > 0.72 && !keepDark) {
     const L = 0.955 - 0.03 * (1 - dom.l) / 0.28;
     const C = base * 0.32;
+    const bg = oklch(L, C, hue);
+    const { accent, onAccent } = vivid
+      ? vibrantAccent(acc, bg, 'light')
+      : { accent: oklch(0.3, 0.02, hue), onAccent: oklch(0.98, 0.01, hue) };
     return {
       mode: 'light',
-      bg: oklch(L, C, hue),
+      bg,
       deep: oklch(L - 0.03, C * 1.15, hue),
       raise: oklch(L - 0.055, C * 1.2, hue),
       ink: oklch(0.24, 0.03, hue),
       dim: oklch(0.47, 0.035, hue),
-      accent: vivid ? oklch(clamp(acc.l, 0.44, 0.54), clamp(acc.c, 0.1, 0.2), acc.h) : oklch(0.3, 0.02, hue),
-      onAccent: oklch(0.98, 0.01, vivid ? acc.h : hue),
+      accent,
+      onAccent,
     };
   }
 
   const L = 0.2 + 0.06 * Math.min(1, dom.l / 0.72);
   const C = base * 0.6;
+  const bg = oklch(L, C, hue);
+  const { accent, onAccent } = vivid
+    ? vibrantAccent(acc, bg, 'dark')
+    : { accent: oklch(0.93, 0.012, hue), onAccent: oklch(0.18, 0.04, hue) };
   return {
     mode: 'dark',
-    bg: oklch(L, C, hue),
+    bg,
     deep: oklch(L - 0.045, C * 0.9, hue),
     raise: oklch(L + 0.055, C, hue),
     ink: oklch(0.96, 0.012, hue),
     dim: oklch(0.77, Math.min(0.045, C + 0.012), hue),
-    accent: vivid ? oklch(clamp(acc.l, 0.78, 0.88), clamp(acc.c, 0.08, 0.17), acc.h) : oklch(0.93, 0.012, hue),
-    onAccent: oklch(0.2, 0.04, vivid ? acc.h : hue),
+    accent,
+    onAccent,
   };
 }
 
@@ -199,6 +286,24 @@ function themeColor() {
   return meta;
 }
 
+/** Updates the SVG favicon so browser / Linux windows also carry the live cover-tinted brush-note icon. */
+function updateFavicon(theme) {
+  const link = document.querySelector('link[rel="icon"][type="image/svg+xml"]');
+  if (!link) return;
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="none">` +
+    `<defs><linearGradient id="g" x1="36" y1="20" x2="220" y2="240" gradientUnits="userSpaceOnUse">` +
+    `<stop offset="0" stop-color="${theme.raise}"/><stop offset="1" stop-color="${theme.deep}"/>` +
+    `</linearGradient></defs>` +
+    `<rect x="14" y="14" width="228" height="228" rx="54" fill="url(#g)" stroke="${theme.ink}" stroke-opacity="0.14" stroke-width="4"/>` +
+    `<g transform="translate(2 2)">` +
+    `<path d="M124 126 V42 C124 37 129 34 134 37 C158 52 190 69 200 103 C205 120 201 137 191 150 C192 132 186 115 171 103 C161 95 152 90 146 87 V126 Z" fill="${theme.ink}"/>` +
+    `<rect x="117" y="134" width="36" height="15" rx="5" fill="${theme.ink}" opacity="0.54"/>` +
+    `<path d="M117 157 H153 C162 185 147 219 116 223 C91 226 70 214 58 197 C68 194 74 186 78 175 C84 160 99 157 117 157 Z" fill="${theme.accent}"/>` +
+    `</g></svg>`;
+  link.href = 'data:image/svg+xml,' + encodeURIComponent(svg);
+}
+
 export function applyTheme(theme, { instant = false } = {}) {
   if (applied && Object.keys(theme).every((k) => applied[k] === theme[k])) return;
   applied = theme;
@@ -213,8 +318,16 @@ export function applyTheme(theme, { instant = false } = {}) {
   root.style.setProperty('--accent', theme.accent);
   root.style.setProperty('--on-accent', theme.onAccent);
   if (instant) requestAnimationFrame(() => root.classList.remove('no-fade'));
-  // The native title bar follows along: on Windows the host colours it, in a browser app window
-  // the browser does, from the page's theme colour.
-  post('/api/chrome', { bg: theme.bg, fg: theme.ink, instant }).catch(() => {});
+  updateFavicon(theme);
+  // The native title bar and taskbar icon follow along: on Windows the host colours both,
+  // in a browser app window the browser follows theme-color and the live SVG favicon.
+  post('/api/chrome', {
+    bg: theme.bg,
+    fg: theme.ink,
+    accent: theme.accent,
+    raise: theme.raise,
+    deep: theme.deep,
+    instant,
+  }).catch(() => {});
   if (window.tintBrowserHost) themeColor().content = theme.bg;
 }

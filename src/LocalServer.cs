@@ -48,19 +48,21 @@ sealed class LocalServer : IDisposable
     readonly DiscordPresence _discord;
     readonly YouTube _youtube;
     readonly Lyrics _lyrics;
-    readonly Spotify _spotify = new();
+    readonly Spotify _spotify;
     readonly Updater _updater;
     readonly string _webRoot;
     HttpListener? _listener;
 
     public int Port { get; private set; }
     public string Origin => $"http://127.0.0.1:{Port}";
+    public string SpotifyRedirectUri => Origin + "/spotify-callback";
 
     public LocalServer(IHost host, Settings settings, Library library, AppleToken token, DiscordPresence discord, YouTube youtube, Updater updater, string webRoot)
     {
         _updater = updater;
         _youtube = youtube;
         _lyrics = new Lyrics(youtube);
+        _spotify = new Spotify(settings);
         _host = host;
         _settings = settings;
         _library = library;
@@ -118,7 +120,8 @@ sealed class LocalServer : IDisposable
             }
 
             var path = Uri.UnescapeDataString(req.Url!.AbsolutePath);
-            if (path.StartsWith("/media/", StringComparison.Ordinal)) await ServeMedia(req, res, path[7..]);
+            if (path == "/spotify-callback") await ServeSpotifyCallback(req, res);
+            else if (path.StartsWith("/media/", StringComparison.Ordinal)) await ServeMedia(req, res, path[7..]);
             else if (path.StartsWith("/art/", StringComparison.Ordinal)) await ServeArt(req, res, path[5..]);
             else if (path.StartsWith("/api/", StringComparison.Ordinal)) await ServeApi(req, res, path[5..]);
             else await ServeStatic(req, res, path);
@@ -365,7 +368,11 @@ sealed class LocalServer : IDisposable
                 {
                     var bg = ParseColor(body?["bg"]?.GetValue<string>());
                     var fg = ParseColor(body?["fg"]?.GetValue<string>());
-                    if (bg != null && fg != null) _host.TintChrome(bg.Value, fg.Value, body?["instant"]?.GetValue<bool>() ?? false);
+                    var accent = ParseColor(body?["accent"]?.GetValue<string>()) ?? fg;
+                    var raise = ParseColor(body?["raise"]?.GetValue<string>()) ?? bg;
+                    var deep = ParseColor(body?["deep"]?.GetValue<string>()) ?? bg;
+                    if (bg != null && fg != null)
+                        _host.TintChrome(bg.Value, fg.Value, accent!.Value, raise!.Value, deep!.Value, body?["instant"]?.GetValue<bool>() ?? false);
                     await WriteJson(res, new { ok = true });
                     return;
                 }
@@ -375,6 +382,18 @@ sealed class LocalServer : IDisposable
                     bool on = body?["on"]?.GetValue<bool>() ?? false;
                     _host.SetMini(on);
                     await WriteJson(res, new { ok = true });
+                    return;
+                }
+
+            case "pending-link" when !post:
+                await WriteJson(res, new { url = TakePendingLink() });
+                return;
+
+            case "test-link" when post:
+                {
+                    var url = body?["url"]?.GetValue<string>() ?? "";
+                    bool ok = LinkHandler.OpenViaShell(url);
+                    await WriteJson(res, new { ok });
                     return;
                 }
 
@@ -510,6 +529,35 @@ sealed class LocalServer : IDisposable
                 }
                 return;
 
+            case "spotify/status":
+                await WriteJson(res, await _spotify.Status(SpotifyRedirectUri));
+                return;
+
+            case "spotify/token":
+                {
+                    var (token, error) = await _spotify.AccessToken(fresh: req.QueryString["fresh"] == "1");
+                    await WriteJson(res, new { token, error });
+                    return;
+                }
+
+            case "spotify/signin" when post:
+                try
+                {
+                    var (authorizeUrl, completed) = _spotify.BeginSignIn(SpotifyRedirectUri);
+                    var ok = await _host.SpotifySignIn(authorizeUrl, completed);
+                    await WriteJson(res, new { ok });
+                }
+                catch (Exception ex)
+                {
+                    await WriteJson(res, new { ok = false, error = ex.Message });
+                }
+                return;
+
+            case "spotify/signout" when post:
+                _spotify.SignOut();
+                await WriteJson(res, new { ok = true });
+                return;
+
             case "system" when post:
                 {
                     var track = await ReadSystemTrack(body);
@@ -545,6 +593,7 @@ sealed class LocalServer : IDisposable
                     // Help links only. Anything else stays inside the app.
                     var url = body?["url"]?.GetValue<string>() ?? "";
                     bool allowed = url.StartsWith("https://developer.apple.com/", StringComparison.Ordinal)
+                        || url.StartsWith("https://developer.spotify.com/", StringComparison.Ordinal)
                         || url.StartsWith("https://discord.com/developers/", StringComparison.Ordinal)
                         || url == "https://music.apple.com/account/settings"
                         || url.StartsWith("https://github.com/akaydevelop/TintMusicPlayer/releases/", StringComparison.Ordinal);
@@ -555,6 +604,26 @@ sealed class LocalServer : IDisposable
         }
 
         res.StatusCode = 404;
+    }
+
+    async Task ServeSpotifyCallback(HttpListenerRequest req, HttpListenerResponse res)
+    {
+        var q = req.QueryString;
+        var (ok, message) = await _spotify.CompleteCallback(q["code"], q["state"], q["error"]);
+        var safe = WebUtility.HtmlEncode(message);
+        var html = $$"""
+            <!doctype html>
+            <html><head><meta charset="utf-8"><title>Tint · Spotify</title>
+            <style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#121417;color:#eef2ef;font:500 15px/1.5 system-ui,sans-serif;text-align:center;padding:24px}</style>
+            </head><body><div><p>{{safe}}</p></div>
+            <script>{{(ok ? "setTimeout(() => window.close(), 350);" : "")}}</script>
+            </body></html>
+            """;
+        var bytes = Encoding.UTF8.GetBytes(html);
+        res.StatusCode = ok ? 200 : 400;
+        res.ContentType = "text/html; charset=utf-8";
+        res.ContentLength64 = bytes.Length;
+        await res.OutputStream.WriteAsync(bytes);
     }
 
     object LibraryPayload()
@@ -625,9 +694,18 @@ sealed class LocalServer : IDisposable
     {
         folders = _settings.Folders,
         keepDark = _settings.KeepDark,
+        coverBackdrop = _settings.CoverBackdrop,
+        handleLinks = _settings.HandleLinks,
+        handleAppLinks = _settings.HandleAppLinks,
         discord = new { enabled = _settings.DiscordEnabled, appId = _settings.DiscordAppId ?? "" },
         youtube = _settings.YouTubeEnabled,
         youtubePlayer = _settings.YouTubePlayer,
+        spotify = new
+        {
+            enabled = _settings.SpotifyEnabled,
+            clientId = _settings.SpotifyClientId ?? "",
+            signedIn = _spotify.IsSignedIn,
+        },
         pauseFadeMs = _settings.PauseFadeMs,
         crossfadeMs = _settings.CrossfadeMs,
         cacheKeepDays = _settings.CacheKeepDays,
@@ -642,6 +720,20 @@ sealed class LocalServer : IDisposable
             useWeb = _settings.AppleUseWebToken,
         },
     };
+
+    readonly object _linkGate = new();
+    readonly Queue<string> _pendingLinks = new();
+
+    public void EnqueueLink(string? url)
+    {
+        if (!LinkHandler.IsMusicLink(url)) return;
+        lock (_linkGate) _pendingLinks.Enqueue(url!.Trim());
+    }
+
+    string? TakePendingLink()
+    {
+        lock (_linkGate) return _pendingLinks.Count > 0 ? _pendingLinks.Dequeue() : null;
+    }
 
     readonly object _collectionGate = new();
 
@@ -678,6 +770,7 @@ sealed class LocalServer : IDisposable
     {
         if (body is not JsonObject o) return;
         bool foldersChanged = false;
+        bool linksChanged = false;
 
         if (o["folders"] is JsonArray folders)
         {
@@ -687,8 +780,31 @@ sealed class LocalServer : IDisposable
             _settings.Folders = next;
         }
         if (o["keepDark"] is JsonValue keepDark) _settings.KeepDark = keepDark.GetValue<bool>();
+        if (o["coverBackdrop"] is JsonValue coverBackdrop) _settings.CoverBackdrop = coverBackdrop.GetValue<bool>();
+        if (o["handleLinks"] is JsonValue handleLinks)
+        {
+            _settings.HandleLinks = handleLinks.GetValue<bool>();
+            if (!_settings.HandleLinks) _settings.HandleAppLinks = false;
+            linksChanged = true;
+        }
+        if (o["handleAppLinks"] is JsonValue handleAppLinks)
+        {
+            _settings.HandleAppLinks = _settings.HandleLinks && handleAppLinks.GetValue<bool>();
+            linksChanged = true;
+        }
         if (o["youtube"] is JsonValue youtube) _settings.YouTubeEnabled = youtube.GetValue<bool>();
         if (o["youtubePlayer"] is JsonValue youtubePlayer) _settings.YouTubePlayer = youtubePlayer.GetValue<string>() == "ytdlp" ? "ytdlp" : "page";
+        if (o["spotifyEnabled"] is JsonValue spotifyOn) _settings.SpotifyEnabled = spotifyOn.GetValue<bool>();
+        if (o["spotifyClientId"] is JsonValue spotifyId)
+        {
+            var value = spotifyId.GetValue<string>().Trim();
+            if (!string.Equals(value, _settings.SpotifyClientId, StringComparison.Ordinal))
+            {
+                _spotify.SignOut();
+                _settings.SpotifyClientId = value.Length > 0 ? value : null;
+            }
+        }
+        if (o["forgetSpotify"] is JsonValue forgetSp && forgetSp.GetValue<bool>()) _spotify.Forget();
         if (o["pauseFadeMs"] is JsonValue pauseFade) _settings.PauseFadeMs = Math.Clamp(pauseFade.GetValue<int>(), 0, 1000);
         if (o["crossfadeMs"] is JsonValue crossfade) _settings.CrossfadeMs = Math.Clamp(crossfade.GetValue<int>(), 0, 5000);
         if (o["cacheKeepDays"] is JsonValue keepDays)
@@ -696,7 +812,7 @@ sealed class LocalServer : IDisposable
             _settings.CacheKeepDays = Math.Clamp(keepDays.GetValue<int>(), 0, 3650);
             if (_settings.CacheKeepDays > 0) PageCache.Clear(_settings.CacheKeepDays);
         }
-        if (o["mainService"] is JsonValue main && main.GetValue<string>() is var service && service is "apple" or "youtube" or "pc")
+        if (o["mainService"] is JsonValue main && main.GetValue<string>() is var service && service is "apple" or "youtube" or "spotify" or "pc")
             _settings.MainService = service;
         if (o["welcomed"] is JsonValue welcomed)
         {
@@ -733,6 +849,7 @@ sealed class LocalServer : IDisposable
         }
 
         _settings.Save();
+        if (linksChanged) LinkHandler.Sync(_settings.HandleLinks, _settings.HandleAppLinks);
         if (foldersChanged) _library.Rescan();
         if (discordChanged) _discord.Reconfigure();
     }

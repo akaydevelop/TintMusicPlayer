@@ -2,6 +2,7 @@
 // It also owns the theme, because the theme is whatever the current cover says it is.
 
 import * as player from './player.js';
+import * as likes from './likes.js';
 import { englishTitle } from './apple.js';
 import { prefs, onChange as onPrefs } from './prefs.js';
 import { post } from './api.js';
@@ -12,11 +13,12 @@ import { artistHref } from './artist.js';
 import { paletteOf, themeFrom, applyTheme, IDLE_THEME } from './palette.js';
 
 const QUEUE_ROWS = 80;
-// The little mark beside the artist that says where the song is playing from.
+// The little mark beside the artist that says where the song is playing from (monochrome so it blends with the cover palette).
 const FROM = {
   local: { icon: 'pc', label: 'Playing from this PC' },
-  apple: { icon: 'apple', label: 'Playing from Apple Music' },
-  youtube: { icon: 'youtube', label: 'Playing from YouTube Music' },
+  apple: { icon: 'appleMono', label: 'Playing from Apple Music' },
+  youtube: { icon: 'youtubeMono', label: 'Playing from YouTube Music' },
+  spotify: { icon: 'spotifyMono', label: 'Playing from Spotify' },
 };
 const WHEEL_NOTCH = 100;  // what one click of a mouse wheel reports
 const WHEEL_STEP = 0.05;  // how much volume that click is worth
@@ -27,6 +29,7 @@ const stillMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 const els = {};
 let scrubbing = false;
 let shownArt = null;
+let shownBackdrop = null;
 let shownSong = null;
 let shownPlaying = null;
 let shownError = null;
@@ -36,9 +39,9 @@ let volumeShown = null;  // where the volume slider is drawn, on its way to the 
 let volumeFrame = 0;
 let volumeByHand = false;
 
-export function initDeck() {
+export function initDeck({ onAddToPlaylist = null } = {}) {
   for (const id of ['deck-art', 'deck-title', 'deck-title-english', 'deck-source', 'deck-artist', 'seek', 't-now', 't-format', 't-left', 'b-shuffle', 'b-prev', 'b-play',
-    'b-next', 'b-repeat', 'b-mute', 'vol', 'b-expand', 'b-clear', 'queue', 'queue-empty', 'b-share', 'b-lyrics']) els[id] = $(id);
+    'b-next', 'b-repeat', 'b-mute', 'vol', 'b-expand', 'b-clear', 'queue', 'queue-empty', 'b-like', 'b-share', 'b-lyrics']) els[id] = $(id);
 
   els['b-prev'].innerHTML = icon('prev');
   els['b-next'].innerHTML = icon('next');
@@ -46,6 +49,16 @@ export function initDeck() {
   els['b-expand'].innerHTML = icon('expand');
   els['b-share'].innerHTML = icon('share');
   els['b-lyrics'].innerHTML = icon('lyrics');
+  els['b-like'].addEventListener('click', async () => {
+    const track = player.current();
+    if (!track) return;
+    try {
+      const res = await likes.toggleLike(track);
+      toast(res.liked ? `Liked "${track.title}" on ${res.syncedTo.join(', ')}` : `Removed "${track.title}" from Liked (${res.syncedTo.join(', ')})`);
+    } catch (e) {
+      toast(e?.message || "Couldn't sync like.", { ms: 5000 });
+    }
+  });
   els['b-lyrics'].addEventListener('click', () => {
     if (location.hash === '#/lyrics') {
       if (history.length > 1) history.back(); else location.hash = '#/albums';
@@ -85,11 +98,26 @@ export function initDeck() {
       if (!track) return;
       e.preventDefault();
       linkFor(track).catch(() => {});
+      const likedNow = likes.isLiked(track);
       showMenu(e.clientX, e.clientY, [
-        { label: 'See it closer', run: closer.open },
-        { label: 'Copy title', run: () => copyText(track.title, 'Title copied') },
-        track.artist && { label: 'Copy title and artist', run: () => copyText(`${track.title} - ${track.artist}`, 'Title and artist copied') },
-        { label: 'Share YouTube Music link', run: () => share(track) },
+        {
+          icon: likedNow ? 'heartFilled' : 'heart', active: likedNow,
+          label: likedNow ? 'Remove from Liked songs' : 'Like song',
+          run: async () => {
+            try {
+              const res = await likes.toggleLike(track);
+              toast(res.liked ? `Liked "${track.title}" on ${res.syncedTo.join(', ')}` : `Removed "${track.title}" from Liked (${res.syncedTo.join(', ')})`);
+            } catch (err) {
+              toast(err?.message || "Couldn't sync like.", { ms: 5000 });
+            }
+          },
+        },
+        onAddToPlaylist && { icon: 'listPlus', label: 'Add to playlist…', run: () => onAddToPlaylist(e.clientX, e.clientY, [track]) },
+        { sep: true },
+        { icon: 'eye', label: 'See it closer', run: closer.open },
+        { icon: 'copy', label: 'Copy title', run: () => copyText(track.title, 'Title copied') },
+        track.artist && { icon: 'copy', label: 'Copy title and artist', run: () => copyText(`${track.title} - ${track.artist}`, 'Title and artist copied') },
+        { icon: 'share', label: 'Share YouTube Music link', run: () => share(track) },
       ]);
     });
   }
@@ -140,9 +168,49 @@ export function initDeck() {
     else if (kind === 'modes') drawModes();
     else if (kind === 'volume') drawVolume();
   });
-  onPrefs(() => { themedFor = null; retheme(); });
+  onPrefs(() => { themedFor = null; retheme(); drawBackdrop(); });
+  likes.onChange(drawLike);
 
   drawTrack(); drawState(); drawModes(); drawVolume(); drawQueue(); drawTime(0);
+}
+
+function drawLike() {
+  const track = player.current();
+  const btn = els['b-like'];
+  if (!btn) return;
+  btn.hidden = !track;
+  if (!track) return;
+  const on = likes.isLiked(track);
+  btn.innerHTML = icon(on ? 'heartFilled' : 'heart');
+  btn.classList.toggle('is-liked', on);
+  btn.setAttribute('aria-pressed', String(on));
+  btn.setAttribute('aria-label', on ? 'Remove from Liked songs' : 'Like');
+  btn.title = on ? 'Remove from Liked songs' : 'Like';
+}
+
+// ---- blurred cover backdrop ---------------------------------------------------------------------
+
+function drawBackdrop() {
+  const host = $('backdrop');
+  if (!host) return;
+  const track = player.current();
+  const src = prefs.coverBackdrop && track ? artSrc(track.art, 240) : null;
+  document.documentElement.classList.toggle('has-backdrop', !!src);
+  if (src === shownBackdrop) return;
+  shownBackdrop = src;
+  const old = [...host.querySelectorAll('.backdrop-scene')];
+  if (!src) {
+    old.forEach((n) => n.remove());
+    return;
+  }
+  const bg = `url("${src}")`;
+  const scene = h('div', { class: 'backdrop-scene is-entering' },
+    h('div', { class: 'bd-layer bd-a', style: { backgroundImage: bg } }),
+    h('div', { class: 'bd-layer bd-b', style: { backgroundImage: bg } }),
+    h('div', { class: 'bd-layer bd-c', style: { backgroundImage: bg } }));
+  host.append(scene);
+  requestAnimationFrame(() => scene.classList.remove('is-entering'));
+  if (old.length) setTimeout(() => old.forEach((n) => n.remove()), 1200);
 }
 
 // ---- theme --------------------------------------------------------------------------------------
@@ -176,6 +244,7 @@ function drawTrack() {
   for (const part of [els['deck-art'], els['deck-title']]) part.classList.toggle('is-openable', !!track);
   els['b-share'].hidden = !track;
   els['b-lyrics'].hidden = !track;
+  drawLike();
   const secondary = els['deck-title-english'];
   secondary.textContent = '';
   secondary.hidden = true;
@@ -218,6 +287,7 @@ function drawTrack() {
     }
   }
   retheme();
+  drawBackdrop();
 }
 
 function drawState() {

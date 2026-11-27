@@ -297,7 +297,8 @@ sealed partial class YouTube : IDisposable
     /// </summary>
     public async Task<string> Call(string endpoint, JsonNode? body, string? next)
     {
-        if (endpoint is not ("search" or "browse" or "next")) throw new ArgumentException("Tint doesn't ask YouTube Music that.");
+        if (endpoint is not ("search" or "browse" or "next" or "like/like" or "like/removelike" or "browse/edit_playlist" or "playlist/create" or "playlist/delete"))
+            throw new ArgumentException("Tint doesn't ask YouTube Music that.");
         var question = body as JsonObject ?? new JsonObject();
         question["context"] = new JsonObject
         {

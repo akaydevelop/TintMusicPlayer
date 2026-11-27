@@ -7,8 +7,10 @@ static class Program
     {
         Updater.AfterRestart(args);
 
+        var incomingLink = LinkHandler.LinkFromArgs(args);
+
         // One window per user (per data folder, so a copy tried out with TINT_DATA can run beside
-        // it): a second launch just brings the first one forward.
+        // it): a second launch forwards any link and brings the first one forward.
         var name = Environment.GetEnvironmentVariable("TINT_DATA") is { Length: > 0 }
             ? "Tint." + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(Paths.Data.ToLowerInvariant())))[..16]
             : "Tint";
@@ -16,6 +18,7 @@ static class Program
         using var wake = new EventWaitHandle(false, EventResetMode.AutoReset, $@"Local\{name}.Wake");
         if (!first)
         {
+            if (incomingLink != null) LinkHandler.WritePending(incomingLink);
             wake.Set();
             return;
         }
@@ -23,14 +26,22 @@ static class Program
         ApplicationConfiguration.Initialize();
         bool dev = args.Contains("--dev");
         var updater = new Updater(dev);
-        var form = new MainForm(dev, updater);
+        var form = new MainForm(dev, updater, incomingLink);
 
         var waker = new Thread(() =>
         {
             while (wake.WaitOne())
             {
                 if (form.IsDisposed) break;
-                try { form.BeginInvoke(form.BringForward); }
+                var link = LinkHandler.TakePending();
+                try
+                {
+                    form.BeginInvoke(() =>
+                    {
+                        form.BringForward();
+                        if (link != null) form.OpenExternalLink(link);
+                    });
+                }
                 catch { break; }
             }
         })

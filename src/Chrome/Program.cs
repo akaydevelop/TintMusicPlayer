@@ -9,20 +9,24 @@ static class Program
     {
         bool dev = args.Contains("--dev");
         Updater.AfterRestart(args);
+        var incomingLink = LinkHandler.LinkFromArgs(args);
 
-        using var instance = SingleInstance.Claim();
+        using var instance = SingleInstance.Claim(incomingLink);
         if (instance == null) return 0; // another Tint is running, and has been brought forward
 
         var settings = Settings.Load();
+        if (settings.HandleLinks) LinkHandler.Sync(true, settings.HandleAppLinks);
         var library = new Library(settings);
         var youtube = new YouTube();
         var discord = new DiscordPresence(settings, library.Covers);
         var updater = new Updater(dev);
         var host = new ChromeHost(dev, settings, library, youtube);
         var server = new LocalServer(host, settings, library, new AppleToken(settings), discord, youtube, updater, Paths.WebRoot(dev));
+        if (incomingLink != null) server.EnqueueLink(incomingLink);
         host.Server = server;
         library.Thumbnailer = host.Thumbnail;
         instance.Woken += host.BringForward;
+        instance.LinkReceived += server.EnqueueLink;
 
         // Closed from a terminal or by the session ending: close the browser too, and keep the window's place.
         using var interrupt = PosixSignalRegistration.Create(PosixSignal.SIGINT, Quit);

@@ -1,20 +1,22 @@
 // Starts everything and moves between pages.
 
-import { $, icon, debounce, closeMenu } from './ui.js';
+import { $, icon, debounce, closeMenu, toast } from './ui.js';
 import * as player from './player.js';
 import * as apple from './apple.js';
 import * as youtube from './youtube.js';
+import * as spotify from './spotify.js';
 import * as library from './library.js';
 import * as prefs from './prefs.js';
 import * as update from './update.js';
 import * as collection from './collection.js';
+import * as likes from './likes.js';
 import * as backup from './backup.js';
 import * as played from './history.js';
 import { initDeck, themeNow } from './deck.js';
 import { initPresence } from './presence.js';
 import { initSystem } from './system.js';
-import { routes, notePasted } from './views.js';
-import { post } from './api.js';
+import { routes, notePasted, playlistPanel } from './views.js';
+import { get, post } from './api.js';
 
 const scroller = $('scroller');
 const viewHost = $('view');
@@ -98,7 +100,48 @@ function refresh(why) {
 
 // ---- top bar ------------------------------------------------------------------------------------
 
+function initTitlebar() {
+  const bar = $('titlebar');
+  // Integrated frameless titlebar runs on Windows WebView2; Linux ChromeHost keeps its browser window frame.
+  if (!bar || window.tintBrowserHost || !window.chrome?.webview) return;
+  bar.hidden = false;
+  document.documentElement.classList.add('has-titlebar');
+
+  const tell = (action) => window.chrome.webview.postMessage({ to: 'window', do: action });
+  const drag = $('tb-drag');
+  drag.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 || e.detail >= 2) return;
+    tell('drag');
+  });
+  drag.addEventListener('dblclick', () => tell('max'));
+  $('tb-min').addEventListener('click', () => tell('min'));
+  $('tb-max').addEventListener('click', () => tell('max'));
+  $('tb-close').addEventListener('click', () => tell('close'));
+
+  const maxBtn = $('tb-max');
+  const setMax = (on) => {
+    maxBtn.setAttribute('aria-label', on ? 'Restore' : 'Maximize');
+    maxBtn.title = on ? 'Restore' : 'Maximize';
+    maxBtn.innerHTML = on
+      ? '<svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M3.5 4.2V2.8a.8.8 0 0 1 .8-.8h4.9a.8.8 0 0 1 .8.8v4.9a.8.8 0 0 1-.8.8H7.8" stroke="currentColor" stroke-width="1.1" fill="none"/><rect x="2" y="4.2" width="5.8" height="5.8" rx=".8" stroke="currentColor" stroke-width="1.15" fill="none"/></svg>'
+      : '<svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><rect x="2.2" y="2.2" width="7.6" height="7.6" rx="1" stroke="currentColor" stroke-width="1.15" fill="none"/></svg>';
+  };
+  window.chrome.webview.addEventListener('message', ({ data }) => {
+    if (data?.is === 'window') setMax(!!data.maximized);
+  });
+  tell('ready');
+
+  const titleEl = $('tb-title');
+  const syncTitle = () => {
+    const t = player.current();
+    titleEl.textContent = t && player.state.playing ? `${t.title} – ${t.artist}` : 'Tint';
+  };
+  player.on((kind) => { if (kind === 'track' || kind === 'state') syncTitle(); });
+  syncTitle();
+}
+
 function initBar() {
+  initTitlebar();
   $('b-back').innerHTML = icon('back');
   $('tab-start').innerHTML = icon('home');
   $('b-mini').innerHTML = icon('mini');
@@ -109,16 +152,9 @@ function initBar() {
   $('b-mini').addEventListener('click', () => post('/api/mini', { on: true }).catch(() => {}));
 
   const search = debounce(() => {
-    // A pasted playlist link opens the playlist, where it can be played and saved.
-    const listed = youtube.playlistIn(searchBox.value);
-    if (listed) {
-      searchBox.value = '';
-      searchBox.blur();
-      notePasted(listed);
-      location.hash = '#/playlist/y/' + encodeURIComponent(listed);
-      return;
-    }
-    const target = '#/search/' + encodeURIComponent(searchBox.value.trim());
+    const raw = searchBox.value.trim();
+    if (openMusicLink(raw, { fromSearch: true })) return;
+    const target = '#/search/' + encodeURIComponent(raw);
     // Typing refines one search; it shouldn't leave a trail of history entries.
     if (location.hash.startsWith('#/search')) location.replace(target);
     else location.hash = target;
@@ -127,6 +163,154 @@ function initBar() {
   searchBox.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') { searchBox.value = ''; searchBox.blur(); search(); }
   });
+}
+
+/** Unwraps tint:// links and routes Spotify, YouTube Music, or Apple Music URLs into the right Tint page. */
+function unwrapTintLink(raw) {
+  let s = (raw || '').trim();
+  if (!s) return '';
+  if (/^tint:/i.test(s)) {
+    try {
+      const u = new URL(s);
+      const param = u.searchParams.get('url') || u.searchParams.get('q');
+      if (param) return param.trim();
+      const rest = s.replace(/^tint:\/*(open\/?)?/i, '').trim();
+      return decodeURIComponent(rest);
+    } catch {
+      return s.replace(/^tint:\/*/i, '').trim();
+    }
+  }
+  return s;
+}
+
+function appleLinkIn(text) {
+  let s = (text || '').trim();
+  if (/^(music|itmss):\/\//i.test(s)) s = 'https://' + s.replace(/^(music|itmss):\/\//i, '');
+  let u;
+  try { u = new URL(s); } catch { return null; }
+  if (!/(^|\.)music\.apple\.com$/i.test(u.hostname)) return null;
+  const parts = u.pathname.split('/').filter(Boolean);
+  for (let i = 0; i < parts.length; i++) {
+    const seg = parts[i].toLowerCase();
+    if (seg === 'playlist') {
+      const id = parts.slice(i + 1).reverse().find((p) => /^pl\.[A-Za-z0-9._-]+$/.test(p));
+      if (id) return { kind: 'playlist', id };
+    }
+    if (seg === 'album') {
+      const id = parts.slice(i + 1).reverse().find((p) => /^\d+$/.test(p));
+      if (id) return { kind: 'album', id };
+    }
+    if (seg === 'artist') {
+      const id = parts.slice(i + 1).reverse().find((p) => /^\d+$/.test(p));
+      if (id) return { kind: 'artist', id };
+    }
+  }
+  return null;
+}
+
+function spotifyArtistIn(text) {
+  const s = (text || '').trim();
+  const uri = s.match(/^spotify:artist:([A-Za-z0-9]{22})$/i);
+  if (uri) return uri[1];
+  try {
+    const u = new URL(s);
+    if (!/(^|\.)spotify\.com$/i.test(u.hostname)) return null;
+    const m = u.pathname.match(/\/artist\/([A-Za-z0-9]{22})\b/);
+    return m ? m[1] : null;
+  } catch { return null; }
+}
+
+function openMusicLink(raw, { fromSearch = false, notify = false } = {}) {
+  const s = unwrapTintLink(raw);
+  if (!s) return false;
+  const clearBox = () => { if (fromSearch) { searchBox.value = ''; searchBox.blur(); } };
+
+  // YouTube / YouTube Music playlist
+  const listed = youtube.playlistIn(s);
+  if (listed) {
+    clearBox();
+    notePasted(listed);
+    location.hash = '#/playlist/y/' + encodeURIComponent(listed);
+    if (notify) toast('Opened YouTube Music playlist in Tint');
+    return true;
+  }
+
+  // Spotify playlist, album, artist, or track
+  const spotted = spotify.linkIn(s);
+  const spottedArtist = !spotted ? spotifyArtistIn(s) : null;
+  if (spotted && spotify.isSignedIn() && (spotted.kind === 'playlist' || spotted.kind === 'album')) {
+    clearBox();
+    location.hash = `#/${spotted.kind}/s/${encodeURIComponent(spotted.id)}`;
+    if (notify) toast(`Opened Spotify ${spotted.kind} in Tint`);
+    return true;
+  }
+  if (spottedArtist && spotify.isSignedIn()) {
+    clearBox();
+    location.hash = `#/artist/s/${encodeURIComponent(spottedArtist)}`;
+    if (notify) toast('Opened Spotify artist in Tint');
+    return true;
+  }
+
+  // Apple Music playlist, album, or artist
+  const appleLink = appleLinkIn(s);
+  if (appleLink && apple.isSignedIn()) {
+    clearBox();
+    location.hash = `#/${appleLink.kind}/a/${encodeURIComponent(appleLink.id)}`;
+    if (notify) toast(`Opened Apple Music ${appleLink.kind} in Tint`);
+    return true;
+  }
+
+  // Any other external link (tracks, signed-out Spotify/Apple links, YouTube songs) opens via search.
+  if (!fromSearch) {
+    location.hash = '#/search/' + encodeURIComponent(s);
+    if (notify) toast('Opened link in Tint');
+    return true;
+  }
+  return false;
+}
+
+let lastExternalLink = '';
+let lastExternalAt = 0;
+
+function isMusicLink(raw) {
+  const s = unwrapTintLink(raw);
+  if (!s || /^tint:/i.test(s)) return false;
+  if (/^spotify:(track|album|playlist|artist):[A-Za-z0-9]{22}$/i.test(s)) return true;
+  let norm = s;
+  if (/^(music|itmss):\/\//i.test(norm)) norm = 'https://' + norm.replace(/^(music|itmss):\/\//i, '');
+  let u;
+  try { u = new URL(norm); } catch { return false; }
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') return false;
+  const host = u.hostname.toLowerCase();
+  if (host === 'open.spotify.com' || host === 'play.spotify.com' || host === 'spotify.link') return true;
+  if (host === 'music.apple.com' || host.endsWith('.music.apple.com')) return true;
+  if (host === 'music.youtube.com' || host === 'youtu.be') return true;
+  if (host === 'youtube.com' || host === 'www.youtube.com' || host === 'm.youtube.com') {
+    const p = u.pathname.toLowerCase();
+    return p === '/watch' || p === '/playlist';
+  }
+  return false;
+}
+
+function handleExternalLink(raw) {
+  const url = (raw || '').trim();
+  if (!url) return;
+  if (!isMusicLink(url)) {
+    toast('Only Spotify, Apple Music, and YouTube Music links can be opened.', { ms: 4000 });
+    return;
+  }
+  const now = Date.now();
+  if (url === lastExternalLink && now - lastExternalAt < 1500) return;
+  lastExternalLink = url;
+  lastExternalAt = now;
+  openMusicLink(url, { notify: true });
+}
+
+async function checkPendingLink() {
+  try {
+    const res = await get('/api/pending-link');
+    if (res?.url) handleExternalLink(res.url);
+  } catch { }
 }
 
 function drawAppleTabs() {
@@ -156,6 +340,16 @@ function moveInk() {
 }
 window.addEventListener('resize', () => moveInk());
 document.fonts?.ready.then(() => moveInk());
+
+// Keep the app feeling native: block the browser's default right-click menu outside text fields
+// and text selections. Cards, songs, lyrics and the deck provide Tint's own context menus.
+document.addEventListener('contextmenu', (e) => {
+  if (e.defaultPrevented) return;
+  const target = e.target;
+  if (target?.closest?.('input, textarea, [contenteditable]')) return;
+  if (window.getSelection?.()?.toString().trim()) return;
+  e.preventDefault();
+});
 
 // ---- keyboard -----------------------------------------------------------------------------------
 
@@ -189,7 +383,7 @@ document.addEventListener('keydown', (e) => {
 
 async function boot() {
   initBar();
-  initDeck();
+  initDeck({ onAddToPlaylist: playlistPanel });
   await prefs.load().catch(() => {});
   initPresence();
   initSystem();
@@ -200,23 +394,36 @@ async function boot() {
   prefs.onChange(() => refresh('prefs'));
   apple.onChange(() => { drawAppleTabs(); refresh('apple'); });
   youtube.onChange(() => refresh('youtube'));
+  spotify.onChange(() => refresh('spotify'));
   update.onChange(() => refresh('update'));
   // Before the page hears of a new song, so Home already lists it.
   played.init();
   collection.onChange(() => refresh('collection'));
+  likes.onChange(() => refresh('collection'));
   player.on((kind) => { if (kind === 'track') refresh('track'); });
 
-  await Promise.all([library.start(), youtube.init(), collection.load()]);
+  await Promise.all([library.start(), youtube.init(), spotify.init(), collection.load()]);
   // A first start opens on the welcome, which asks where the music comes from.
   if (!prefs.prefs.welcomed) history.replaceState(null, '', '#/welcome');
   show();
 
-  // Apple's player loads after the local library is already on screen.
-  apple.init();
+  // Receive links opened from other apps (via tint://, spotify:, music:, or CLI handoff).
+  window.chrome?.webview?.addEventListener('message', ({ data }) => {
+    if (data?.is === 'open-link' && data.url) {
+      handleExternalLink(data.url);
+      get('/api/pending-link').catch(() => {}); // drain queue copy
+    }
+  });
+  window.addEventListener('focus', () => checkPendingLink());
+  checkPendingLink();
+
+  // Apple's player loads after the local library is already on screen; warm merged Liked songs too.
+  apple.init().then(() => likes.warm());
+  likes.warm();
   update.init();
 }
 
 // A handle for poking at the app from DevTools.
-window.tint = { player, apple, youtube, library, prefs, update, collection, backup };
+window.tint = { player, apple, youtube, spotify, library, prefs, update, collection, likes, backup };
 
 boot();

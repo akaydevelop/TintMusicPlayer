@@ -1,5 +1,6 @@
-# Draws the Tint app icon (a record sliding out of its sleeve) and writes
-# assets\tint.ico plus wwwroot\icon.png. Run again after changing the artwork.
+# Draws the Tint app icon (monochrome eighth note with a round paintbrush-tip notehead)
+# and writes assets\tint.ico, assets\tint.png (256px for Linux), and wwwroot\icon.png.
+# Run again after changing the artwork.
 param([string]$Root = (Split-Path -Parent $PSScriptRoot))
 
 Add-Type -AssemblyName System.Drawing
@@ -11,30 +12,62 @@ function New-IconBitmap([int]$size) {
     $g.PixelOffsetMode = 'HighQuality'
     $g.Clear([System.Drawing.Color]::Transparent)
     $s = $size / 256.0
+    $g.ScaleTransform($s, $s)
 
-    # Record, peeking out to the right of the sleeve.
-    $disc = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(255, 240, 178, 84))
-    $g.FillEllipse($disc, 96 * $s, 38 * $s, 150 * $s, 150 * $s)
-    $hole = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(255, 20, 38, 43))
-    $g.FillEllipse($hole, 157 * $s, 99 * $s, 28 * $s, 28 * $s)
+    # Monochrome rounded-square badge
+    $bx = 14.0; $by = 14.0; $bw = 228.0; $bh = 228.0; $br = 108.0
+    $bgPath = New-Object System.Drawing.Drawing2D.GraphicsPath
+    $bgPath.AddArc($bx, $by, $br, $br, 180, 90)
+    $bgPath.AddArc($bx + $bw - $br, $by, $br, $br, 270, 90)
+    $bgPath.AddArc($bx + $bw - $br, $by + $bh - $br, $br, $br, 0, 90)
+    $bgPath.AddArc($bx, $by + $bh - $br, $br, $br, 90, 90)
+    $bgPath.CloseFigure()
+    $bgBrush = New-Object System.Drawing.Drawing2D.LinearGradientBrush `
+        (New-Object System.Drawing.PointF 36, 20), `
+        (New-Object System.Drawing.PointF 220, 240), `
+        ([System.Drawing.Color]::FromArgb(255, 36, 36, 41)), `
+        ([System.Drawing.Color]::FromArgb(255, 17, 17, 20))
+    $g.FillPath($bgBrush, $bgPath)
 
-    # Sleeve.
-    $r = 30 * $s
-    $x = 14 * $s; $y = 30 * $s; $w = 166 * $s; $h = 166 * $s
-    $path = New-Object System.Drawing.Drawing2D.GraphicsPath
-    $path.AddArc($x, $y, $r, $r, 180, 90)
-    $path.AddArc($x + $w - $r, $y, $r, $r, 270, 90)
-    $path.AddArc($x + $w - $r, $y + $h - $r, $r, $r, 0, 90)
-    $path.AddArc($x, $y + $h - $r, $r, $r, 90, 90)
-    $path.CloseFigure()
-    $sleeve = New-Object System.Drawing.Drawing2D.LinearGradientBrush `
-        (New-Object System.Drawing.PointF $x, $y), `
-        (New-Object System.Drawing.PointF ($x + $w), ($y + $h)), `
-        ([System.Drawing.Color]::FromArgb(255, 48, 96, 106)), `
-        ([System.Drawing.Color]::FromArgb(255, 24, 50, 58))
-    $g.FillPath($sleeve, $path)
+    $ink = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(255, 246, 246, 248))
+    $ferruleInk = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(143, 246, 246, 248))
 
-    $g.Dispose()
+    $g.TranslateTransform(2, 2)
+
+    # Eighth-note stem and sweeping flag
+    $flag = New-Object System.Drawing.Drawing2D.GraphicsPath
+    $flag.AddLine(124, 126, 124, 42)
+    $flag.AddBezier(124, 42, 124, 37, 129, 34, 134, 37)
+    $flag.AddBezier(134, 37, 158, 52, 190, 69, 200, 103)
+    $flag.AddBezier(200, 103, 205, 120, 201, 137, 191, 150)
+    $flag.AddBezier(191, 150, 192, 132, 186, 115, 171, 103)
+    $flag.AddBezier(171, 103, 161, 95, 152, 90, 146, 87)
+    $flag.AddLine(146, 87, 146, 126)
+    $flag.CloseFigure()
+    $g.FillPath($ink, $flag)
+
+    # Brush ferrule collar
+    $fx = 117.0; $fy = 134.0; $fw = 36.0; $fh = 15.0; $fr = 10.0
+    $fPath = New-Object System.Drawing.Drawing2D.GraphicsPath
+    $fPath.AddArc($fx, $fy, $fr, $fr, 180, 90)
+    $fPath.AddArc($fx + $fw - $fr, $fy, $fr, $fr, 270, 90)
+    $fPath.AddArc($fx + $fw - $fr, $fy + $fh - $fr, $fr, $fr, 0, 90)
+    $fPath.AddArc($fx, $fy + $fh - $fr, $fr, $fr, 90, 90)
+    $fPath.CloseFigure()
+    $g.FillPath($ferruleInk, $fPath)
+
+    # Round notehead belly tapering into a paintbrush tip
+    $tip = New-Object System.Drawing.Drawing2D.GraphicsPath
+    $tip.AddLine(117, 157, 153, 157)
+    $tip.AddBezier(153, 157, 162, 185, 147, 219, 116, 223)
+    $tip.AddBezier(116, 223, 91, 226, 70, 214, 58, 197)
+    $tip.AddBezier(58, 197, 68, 194, 74, 186, 78, 175)
+    $tip.AddBezier(78, 175, 84, 160, 99, 157, 117, 157)
+    $tip.CloseFigure()
+    $g.FillPath($ink, $tip)
+
+    $bgBrush.Dispose(); $bgPath.Dispose(); $ink.Dispose(); $ferruleInk.Dispose()
+    $flag.Dispose(); $fPath.Dispose(); $tip.Dispose(); $g.Dispose()
     return $bmp
 }
 
@@ -62,5 +95,6 @@ for ($i = 0; $i -lt $sizes.Count; $i++) {
 foreach ($p in $pngs) { $bw.Write($p) }
 $bw.Flush()
 [System.IO.File]::WriteAllBytes((Join-Path $Root 'assets\tint.ico'), $ico.ToArray())
+[System.IO.File]::WriteAllBytes((Join-Path $Root 'assets\tint.png'), $pngs[-1])
 [System.IO.File]::WriteAllBytes((Join-Path $Root 'wwwroot\icon.png'), (Get-PngBytes (New-IconBitmap 64)))
-"Wrote assets\tint.ico and wwwroot\icon.png"
+"Wrote assets\tint.ico, assets\tint.png and wwwroot\icon.png"

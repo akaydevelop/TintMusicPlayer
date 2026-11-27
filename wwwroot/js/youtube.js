@@ -482,6 +482,120 @@ export async function artist(id) {
 
 /** The YouTube Music artist going by `name`, or null. Only the same name counts. */
 export async function findArtist(name) {
+  return (await findArtists(name))[0] || null;
+}
+
+/** Up to 5 YouTube Music artist IDs going by `name` (handles shared names like "Eve"). */
+export async function findArtists(name) {
   const answer = await call('search', { query: name, params: ONLY.artists });
-  return rowsOf(answer).map(toCard).find((item) => item?.href.includes('#/artist/') && sameName(item.title, name))?.id || null;
+  return [...new Set(rowsOf(answer).map(toCard)
+    .filter((item) => item?.href.includes('#/artist/') && sameName(item.title, name))
+    .map((item) => item.id))].slice(0, 5);
+}
+
+// ---- syncing likes and playlists with YouTube Music ---------------------------------------------
+
+/** Editable playlists owned by the user (excludes Liked Music and Episodes for Later). */
+export function editablePlaylists() {
+  if (!isSignedIn()) return [];
+  return libraryPlaylists().items.filter((p) => p.id !== 'VLLM' && p.id !== 'VLSE');
+}
+
+/** Likes or unlikes a song on YouTube Music and updates the local cached Liked Music list. */
+export async function setLiked(track, liked) {
+  if (!isSignedIn()) throw new Error('Sign in to Google in Settings to sync YouTube Music likes.');
+  const videoId = track?.youtubeId;
+  if (!videoId) throw new Error("This song doesn't have a YouTube Music ID.");
+  await call(liked ? 'like/like' : 'like/removelike', { target: { videoId } });
+  const list = lib.songs.items;
+  const exists = list.some((t) => t.youtubeId === videoId);
+  if (liked && !exists) lib.songs.items = [track, ...list];
+  else if (!liked && exists) lib.songs.items = list.filter((t) => t.youtubeId !== videoId);
+  changed();
+}
+
+/** Adds one or more songs to a YouTube Music playlist (matching cross-platform songs by name). */
+export async function addToPlaylist(playlistId, tracks) {
+  if (!isSignedIn()) throw new Error('Sign in to Google in Settings to edit YouTube Music playlists.');
+  const cleanId = String(playlistId || '').replace(/^VL/, '');
+  const resolved = [];
+  for (const t of tracks) {
+    if (t?.youtubeId) resolved.push(t.youtubeId);
+    else if (t?.title) {
+      const match = await findSong(t).catch(() => null);
+      if (match?.youtubeId) resolved.push(match.youtubeId);
+    }
+  }
+  const unique = [...new Set(resolved)];
+  if (!unique.length) throw new Error("Couldn't find matching songs on YouTube Music.");
+  await call('browse/edit_playlist', {
+    playlistId: cleanId,
+    actions: unique.map((addedVideoId) => ({ action: 'ACTION_ADD_VIDEO', addedVideoId, dedupeOption: 'DEDUPE_OPTION_SKIP' })),
+  });
+  return unique.length;
+}
+
+/** Removes a song from a YouTube Music playlist. */
+export async function removeFromPlaylist(playlistId, track) {
+  if (!isSignedIn()) throw new Error('Sign in to Google in Settings to edit YouTube Music playlists.');
+  if (!track?.youtubeId) throw new Error("This song isn't from YouTube Music.");
+  const cleanId = String(playlistId || '').replace(/^VL/, '');
+  await call('browse/edit_playlist', {
+    playlistId: cleanId,
+    actions: [{ action: 'ACTION_REMOVE_VIDEO_BY_VIDEO_ID', removedVideoId: track.youtubeId }],
+  });
+}
+
+/** Saves (follows) a YouTube Music playlist into the user's YouTube Music library. */
+export async function savePlaylist(playlistId) {
+  if (!isSignedIn()) throw new Error('Sign in to Google in Settings first.');
+  const cleanId = String(playlistId || '').replace(/^VL/, '');
+  await call('like/like', { target: { playlistId: cleanId } });
+}
+
+/** Removes a playlist from the user's YouTube Music library (deletes if owned, otherwise unfollows). */
+export async function removePlaylist(playlistId) {
+  if (!isSignedIn()) throw new Error('Sign in to Google in Settings first.');
+  const cleanId = String(playlistId || '').replace(/^VL/, '');
+  try {
+    await call('playlist/delete', { playlistId: cleanId });
+  } catch {
+    await call('like/removelike', { target: { playlistId: cleanId } });
+  }
+  lib.playlists.items = lib.playlists.items.filter((p) => p.id !== playlistId && p.id.replace(/^VL/, '') !== cleanId);
+  changed();
+}
+
+/** Creates a new private YouTube Music playlist, optionally seeded with songs. */
+export async function createPlaylist(title, tracks = []) {
+  if (!isSignedIn()) throw new Error('Sign in to Google in Settings to create YouTube Music playlists.');
+  const clean = String(title || '').trim().slice(0, 80);
+  if (!clean) return null;
+  const videoIds = [];
+  for (const t of tracks) {
+    if (t?.youtubeId) videoIds.push(t.youtubeId);
+    else if (t?.title) {
+      const match = await findSong(t).catch(() => null);
+      if (match?.youtubeId) videoIds.push(match.youtubeId);
+    }
+  }
+  const res = await call('playlist/create', {
+    title: clean,
+    description: '',
+    privacyStatus: 'PRIVATE',
+    ...(videoIds.length ? { videoIds: [...new Set(videoIds)] } : {}),
+  });
+  const id = res?.playlistId;
+  if (!id) throw new Error("YouTube Music didn't return the new playlist.");
+  const card = {
+    id: 'VL' + id,
+    source: 'youtube',
+    title: clean,
+    artist: 'YouTube Music',
+    art: tracks[0]?.art || null,
+    href: `#/playlist/y/${encodeURIComponent('VL' + id)}`,
+  };
+  lib.playlists.items = [card, ...lib.playlists.items];
+  changed();
+  return card;
 }

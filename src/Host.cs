@@ -15,8 +15,8 @@ interface IHost
     /// <summary>Asks for a MusicKit private key file (.p8).</summary>
     Task<string?> PickKeyFile();
 
-    /// <summary>The page's colours, for a window frame that can follow them.</summary>
-    void TintChrome(Color background, Color text, bool instant);
+    /// <summary>The page's colours, for a window frame and taskbar icon that can follow them.</summary>
+    void TintChrome(Color background, Color text, Color accent, Color raise, Color deep, bool instant);
 
     /// <summary>Switches between the full window and the small player.</summary>
     void SetMini(bool on);
@@ -28,6 +28,9 @@ interface IHost
 
     /// <summary>Opens the hidden YouTube Music page that plays songs with the site's own player.</summary>
     Task<bool> OpenYouTubePage(bool again);
+
+    /// <summary>Opens Spotify's OAuth sign-in window and resolves once the callback finishes or the window closes.</summary>
+    Task<bool> SpotifySignIn(string authorizeUrl, Task<bool> completed);
 
     /// <summary>Closes Tint as if the person had closed its window.</summary>
     void Quit();

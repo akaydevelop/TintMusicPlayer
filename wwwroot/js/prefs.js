@@ -5,14 +5,18 @@ import { get, post } from './api.js';
 export const prefs = {
   folders: [],
   keepDark: false,
+  coverBackdrop: false,
+  handleLinks: false,
+  handleAppLinks: false,
   apple: { teamId: '', keyId: '', hasKey: false, hasToken: false, useWeb: false },
   discord: { enabled: false, appId: '' },
   youtube: false,
   youtubePlayer: 'page', // page | ytdlp
+  spotify: { enabled: false, clientId: '', signedIn: false },
   pauseFadeMs: 150,  // how long playing and pausing fade in and out
   crossfadeMs: 800,  // how long a skipped song fades into the next
   cacheKeepDays: 30, // page copies unused this long are forgotten (0 = never)
-  mainService: '',   // apple | youtube | pc: where songs from elsewhere are looked for first
+  mainService: '',   // apple | youtube | spotify | pc: where songs from elsewhere are looked for first
   welcomed: true,    // false until the first-run welcome is answered
 };
 

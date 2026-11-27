@@ -729,10 +729,24 @@ sealed class ChromeHost : IHost
     });
 
     // The page sets its own theme-color, which is what colours the frame of a browser app window.
-    public void TintChrome(Color background, Color text, bool instant) { }
+    public void TintChrome(Color background, Color text, Color accent, Color raise, Color deep, bool instant) { }
 
     // The browser feeds the system's media controls from the page's Media Session (see system.js).
     public void ShowNowPlaying(SystemTrack? track, bool playing, long at) { }
+
+    public async Task<bool> SpotifySignIn(string authorizeUrl, Task<bool> completed)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo(authorizeUrl) { UseShellExecute = true });
+            var first = await Task.WhenAny(completed, Task.Delay(TimeSpan.FromMinutes(5)));
+            return first == completed && completed.Result;
+        }
+        catch
+        {
+            return false;
+        }
+    }
 
     // ---- album art -------------------------------------------------------------------------------
 

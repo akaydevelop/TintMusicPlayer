@@ -151,6 +151,27 @@ async function call(path, params) {
   }
 }
 
+/** Authenticated write request (PUT / POST / DELETE) to Apple Music's REST API using MusicKit's active tokens. */
+async function mutate(path, { method = 'POST', body = null } = {}) {
+  if (!music || !isSignedIn()) throw new Error('Sign in to Apple Music first.');
+  const url = 'https://api.music.apple.com' + path.replace('{{storefrontId}}', music.storefrontId || 'us');
+  const res = await fetch(url, {
+    method,
+    headers: {
+      Authorization: `Bearer ${music.developerToken}`,
+      'Music-User-Token': music.musicUserToken,
+      ...(body ? { 'Content-Type': 'application/json' } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (res.status === 204) return null;
+  const text = await res.text();
+  let json = null;
+  try { json = text ? JSON.parse(text) : null; } catch { /* non-JSON */ }
+  if (!res.ok) throw explain({ status: res.status, message: json?.errors?.[0]?.detail || json?.errors?.[0]?.title || String(res.status) });
+  return json;
+}
+
 const JAPANESE = /[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]/u;
 const usableEnglish = (track, text) => {
   const name = text?.trim();
@@ -263,6 +284,20 @@ function toAlbum(r) {
   };
 }
 
+const FAVORITE_ART_TOKEN = '47a3c06a-ab88-4d36-a040-41d730e71d45';
+const FAVORITE_NAMES = new Set([
+  'favorite songs', 'favourite songs', 'músicas favoritas', 'canciones favoritas',
+  'chansons favorites', 'lieblingstitel', 'brani preferiti', 'お気に入りの曲', '즐겨찾는 노래', '喜爱的歌曲',
+]);
+
+function isFavoriteAttributes(a) {
+  if (!a || a.canEdit) return false;
+  if (a.artwork?.url?.includes(FAVORITE_ART_TOKEN)) return true;
+  return !a.hasCatalog && !a.isPublic && FAVORITE_NAMES.has((a.name || '').trim().toLowerCase());
+}
+
+export const isFavoritePlaylist = (item) => !!item && item.source === 'apple' && !!item.isFavorites;
+
 function toPlaylist(r) {
   const a = r.attributes || {};
   return {
@@ -272,6 +307,8 @@ function toPlaylist(r) {
     artist: a.curatorName || (r.type === 'library-playlists' ? 'Your playlist' : ''),
     description: a.description?.short || a.description?.standard || '',
     art: artOf(a.artwork),
+    canEdit: !!a.canEdit,
+    isFavorites: isFavoriteAttributes(a),
     href: `#/playlist/a/${encodeURIComponent(r.id)}`,
   };
 }
@@ -300,6 +337,7 @@ const lib = {
   albums: { items: [], state: 'idle' },
   songs: { items: [], state: 'idle' },
   playlists: { items: [], state: 'idle' },
+  favorites: { items: [], state: 'idle', playlistId: null },
 };
 
 function clearLibrary() {
@@ -307,6 +345,7 @@ function clearLibrary() {
     part.items = [];
     part.state = 'idle';
     part.error = null;
+    if ('playlistId' in part) part.playlistId = null;
   }
 }
 
@@ -328,6 +367,135 @@ function loadPart(name, path, map) {
 export const libraryAlbums = () => loadPart('albums', '/v1/me/library/albums', toAlbum);
 export const librarySongs = () => loadPart('songs', '/v1/me/library/songs', (r) => (isSong(r) ? toSong(r) : null));
 export const libraryPlaylists = () => loadPart('playlists', '/v1/me/library/playlists', toPlaylist);
+
+/** Loads the user's Apple Music Favorite Songs playlist (for Tint's unified Liked songs). */
+export function favoriteSongs() {
+  const part = lib.favorites;
+  if (part.state !== 'idle' || !isSignedIn()) return part;
+  part.state = 'loading';
+  (async () => {
+    // Wait for playlists or fetch them directly to find the Favorite Songs playlist ID.
+    let fav = lib.playlists.items.find((p) => p.isFavorites);
+    if (!fav) {
+      const found = [];
+      await eachPage('/v1/me/library/playlists', {}, (items) => {
+        for (const r of items) {
+          const p = toPlaylist(r);
+          if (p.isFavorites) found.push(p);
+        }
+      }, { max: 500 });
+      fav = found[0] || null;
+    }
+    if (!fav) {
+      part.state = 'done';
+      changed();
+      return;
+    }
+    part.playlistId = fav.id;
+    const pl = await playlist(fav.id);
+    part.items = pl.tracks || [];
+    part.state = 'done';
+    changed();
+  })().catch((e) => {
+    part.state = 'error';
+    part.error = e?.message || String(e);
+    changed();
+  });
+  return part;
+}
+
+/** User-owned editable Apple Music playlists. */
+export function editablePlaylists() {
+  if (!isSignedIn()) return [];
+  return libraryPlaylists().items.filter((p) => p.canEdit);
+}
+
+/** Favorites or unfavorites a song on Apple Music and updates the local cached Favorite Songs list. */
+export async function setLiked(track, liked) {
+  if (!isSignedIn()) throw new Error('Sign in to Apple Music first.');
+  const id = track?.appleId;
+  if (!id) throw new Error("This song doesn't have an Apple Music ID.");
+  const kind = /^\d+$/.test(id) ? 'songs' : 'library-songs';
+  await mutate(`/v1/me/ratings/${kind}/${encodeURIComponent(id)}`, liked
+    ? { method: 'PUT', body: { type: 'rating', attributes: { value: 1 } } }
+    : { method: 'DELETE' });
+  const list = lib.favorites.items;
+  const exists = list.some((t) => t.appleId === id || t.id === track.id);
+  if (liked && !exists) lib.favorites.items = [track, ...list];
+  else if (!liked && exists) lib.favorites.items = list.filter((t) => t.appleId !== id && t.id !== track.id);
+  changed();
+}
+
+/** Adds one or more songs to an Apple Music library playlist (matching cross-platform songs by name). */
+export async function addToPlaylist(playlistId, tracks) {
+  if (!isSignedIn()) throw new Error('Sign in to Apple Music first.');
+  const data = [];
+  const seen = new Set();
+  for (const t of tracks) {
+    let id = t?.source === 'apple' ? t.appleId : null;
+    if (!id && t?.title) {
+      const match = await findSong(t).catch(() => null);
+      id = match?.appleId || null;
+    }
+    if (id && !seen.has(id)) {
+      seen.add(id);
+      data.push({ id, type: /^\d+$/.test(id) ? 'songs' : 'library-songs' });
+    }
+  }
+  if (!data.length) throw new Error("Couldn't find matching songs on Apple Music.");
+  await mutate(`/v1/me/library/playlists/${encodeURIComponent(playlistId)}/tracks`, { method: 'POST', body: { data } });
+  return data.length;
+}
+
+/** Creates a new Apple Music library playlist, optionally seeded with songs. */
+export async function createPlaylist(title, tracks = []) {
+  if (!isSignedIn()) throw new Error('Sign in to Apple Music first.');
+  const clean = String(title || '').trim().slice(0, 80);
+  if (!clean) return null;
+  const data = [];
+  const seen = new Set();
+  for (const t of tracks) {
+    let id = t?.source === 'apple' ? t.appleId : null;
+    if (!id && t?.title) {
+      const match = await findSong(t).catch(() => null);
+      id = match?.appleId || null;
+    }
+    if (id && !seen.has(id)) {
+      seen.add(id);
+      data.push({ id, type: /^\d+$/.test(id) ? 'songs' : 'library-songs' });
+    }
+  }
+  const body = { attributes: { name: clean } };
+  if (data.length) body.relationships = { tracks: { data } };
+  const res = await mutate('/v1/me/library/playlists', { method: 'POST', body });
+  const created = res?.data?.[0];
+  const card = created ? toPlaylist(created) : null;
+  if (card) {
+    card.canEdit = true;
+    lib.playlists.items = [card, ...lib.playlists.items];
+    changed();
+  }
+  return card;
+}
+
+/** Adds an Apple Music catalog playlist to the user's Apple Music library. */
+export async function savePlaylist(playlistId) {
+  if (!isSignedIn()) throw new Error('Sign in to Apple Music first.');
+  if (String(playlistId).startsWith('p.')) return; // already a library playlist
+  await mutate(`/v1/me/library?ids[playlists]=${encodeURIComponent(playlistId)}`, { method: 'POST' });
+}
+
+/** Removes a playlist from the user's Apple Music library (best-effort; Apple restricts API deletion on some accounts). */
+export async function removePlaylist(playlistId) {
+  if (!isSignedIn()) throw new Error('Sign in to Apple Music first.');
+  try {
+    await mutate(`/v1/me/library/playlists/${encodeURIComponent(playlistId)}`, { method: 'DELETE' });
+  } catch (e) {
+    throw new Error("Apple Music doesn't allow third-party apps to delete library playlists. Delete it in Apple Music, or remove its saved copy from Tint.");
+  }
+  lib.playlists.items = lib.playlists.items.filter((p) => p.id !== playlistId);
+  changed();
+}
 
 // ---- detail pages -------------------------------------------------------------------------------
 
@@ -413,8 +581,15 @@ export async function artistProfile(id) {
 
 /** The Apple Music artist going by `name`, or null. Only the same name counts. */
 export async function findArtist(name) {
+  return (await findArtists(name))[0] || null;
+}
+
+/** Up to 5 Apple Music artist IDs going by `name` (handles shared names like "Eve"). */
+export async function findArtists(name) {
   const res = await call('/v1/catalog/{{storefrontId}}/search', { term: name, types: 'artists', limit: 10 });
-  return (res.results?.artists?.data || []).find((r) => sameName(r.attributes?.name, name))?.id || null;
+  return [...new Set((res.results?.artists?.data || [])
+    .filter((r) => sameName(r.attributes?.name, name))
+    .map((r) => r.id))].slice(0, 5);
 }
 
 /** The Apple Music artist of a catalog song, or null. */

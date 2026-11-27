@@ -2,8 +2,9 @@
 // its title (click to copy), artist and album, and a way to save the cover. Opened by clicking the
 // cover or title in the now-playing panel; it follows the music if the song changes while open.
 
-import { h, fill, cover, copyText, artAt, artFull, artFallback, closeMenu } from './ui.js';
+import { h, fill, cover, copyText, artAt, artFull, artFallback, closeMenu, toast } from './ui.js';
 import * as player from './player.js';
+import * as likes from './likes.js';
 import { artistHref } from './artist.js';
 import { post } from './api.js';
 
@@ -86,6 +87,19 @@ export function open() {
             ? h('button', { class: 'closer-link', onclick: () => { close(); go(track.albumHref); } }, track.album)
             : h('span', {}, track.album)))),
       h('div', { class: 'closer-actions' },
+        h('button', {
+          class: 'btn' + (likes.isLiked(track) ? ' is-liked' : ''),
+          'aria-pressed': String(likes.isLiked(track)),
+          onclick: async () => {
+            try {
+              const res = await likes.toggleLike(track);
+              toast(res.liked ? `Liked "${track.title}" on ${res.syncedTo.join(', ')}` : `Removed "${track.title}" from Liked (${res.syncedTo.join(', ')})`);
+            } catch (e) {
+              toast(e?.message || "Couldn't sync like.", { ms: 5000 });
+            }
+            draw();
+          },
+        }, h('span', { class: 'btn-icon', icon: likes.isLiked(track) ? 'heartFilled' : 'heart' }), likes.isLiked(track) ? 'Liked' : 'Like'),
         track.art && h('button', {
           class: 'btn' + (savedTo ? ' is-done' : ''),
           title: savedTo ? `Saved as ${savedTo}` : 'Save the cover to Pictures\\Tint',
@@ -108,11 +122,13 @@ export function open() {
     }
   };
   const off = player.on((kind) => { if (kind === 'track') draw(); });
+  const offLikes = likes.onChange(() => draw());
 
   function close() {
     if (current?.el !== el) return;
     current = null;
     off();
+    offLikes();
     document.removeEventListener('keydown', onKey, true);
     el.classList.remove('is-open');
     el.classList.add('is-closing');

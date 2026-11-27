@@ -5,6 +5,7 @@
 
 import * as apple from './apple.js';
 import * as youtube from './youtube.js';
+import * as spotify from './spotify.js';
 import { toast } from './ui.js';
 import { prefs } from './prefs.js';
 
@@ -83,6 +84,7 @@ function fader(apply) {
 const gains = new Map(players.map((el) => [el, fader((v) => { el.volume = v; })]));
 const localGain = () => gains.get(audio);
 const appleGain = fader((v) => { const music = apple.instance(); if (music) music.volume = v; });
+const spotifyGain = fader((v) => { spotify.setPlayerVolume(v); });
 
 let blend = 0;       // the crossfade the song being started gets, used up by the first engine to hand over
 let rise = 0;        // and how long it fades in over
@@ -133,6 +135,10 @@ function hushOthers(next) {
   if (engine === 'apple') {
     if (ms) appleGain.to(0, ms).then((done) => { if (done && engine !== 'apple') hushApple(); });
     else hushApple();
+  } else if (engine === 'spotify') {
+    stopSpotifyClock();
+    if (ms) spotifyGain.to(0, ms).then((done) => { if (done && engine !== 'spotify') spotify.pausePlayback(); });
+    else spotify.pausePlayback();
   } else if (engine === 'page') tellPage({ do: 'stop', fade: ms });
   else if (engine === 'local') audio.pause();
 }
@@ -154,7 +160,7 @@ function fail(my, message, { skip = true, last = false } = {}) {
 
 // ---- the same song from the other service ------------------------------------------------------
 
-const NAMES = { apple: 'Apple Music', youtube: 'YouTube Music' };
+const NAMES = { apple: 'Apple Music', youtube: 'YouTube Music', spotify: 'Spotify' };
 const sought = new WeakSet(); // songs already looked for elsewhere, found or not
 const told = new Set();       // which way round the person has been told about, once each
 let seeking = -1;             // the session a search is running for, so a second failure report can't cut in
@@ -162,9 +168,12 @@ let appleRefusesExplicit = false;
 
 /** Where else a streamed song could come from, if that service is set up to play. */
 function otherService(track) {
-  if (track.source === 'apple' && youtube.isReady()) return youtube;
-  if (track.source === 'youtube' && apple.isSignedIn()) return apple;
-  return null;
+  const candidates = [
+    track.source !== 'spotify' && spotify.isSignedIn() && { mod: spotify, key: 'spotify' },
+    track.source !== 'youtube' && youtube.isReady() && { mod: youtube, key: 'youtube' },
+    track.source !== 'apple' && apple.isSignedIn() && { mod: apple, key: 'apple' },
+  ].filter(Boolean);
+  return candidates[0] || null;
 }
 
 /**
@@ -181,12 +190,12 @@ async function playElsewhere(my, track, message, options) {
   emit('state');
 
   let found = null;
-  try { found = await other.findSong(track); } catch { /* that service didn't answer: same as not found */ }
+  try { found = await other.mod.findSong(track); } catch { /* that service didn't answer: same as not found */ }
   seeking = -1;
   if (my !== session) return;
-  if (!found) return fail(my, `${message} It wasn't found on ${NAMES[from === 'apple' ? 'youtube' : 'apple']} either.`, { ...options, last: true });
+  if (!found) return fail(my, `${message} It wasn't found on ${NAMES[other.key]} either.`, { ...options, last: true });
 
-  Object.assign(track, { source: found.source, appleId: found.appleId, youtubeId: found.youtubeId, duration: found.duration || track.duration, movedFrom: from });
+  Object.assign(track, { source: found.source, appleId: found.appleId, youtubeId: found.youtubeId, spotifyId: found.spotifyId, duration: found.duration || track.duration, movedFrom: from });
   if (!told.has(from)) {
     told.add(from);
     toast(`${NAMES[from]} wouldn't play this song, so it is coming from ${NAMES[found.source]}. Others it won't play will do the same.`, { ms: 6000 });
@@ -234,6 +243,11 @@ function start(index, { autoplay = true, skip = false, fadeUp = false } = {}) {
     return;
   }
 
+  if (track.source === 'spotify') {
+    startSpotify(my, track, autoplay);
+    return;
+  }
+
   // Once Apple has refused one explicit song this session it refuses them all, so don't ask again.
   if (track.explicit && appleRefusesExplicit && otherService(track) && !sought.has(track)) {
     hushOthers(null);
@@ -268,6 +282,100 @@ function start(index, { autoplay = true, skip = false, fadeUp = false } = {}) {
     }
   });
 }
+
+// ---- Spotify songs (Web Playback SDK) -----------------------------------------------------------
+
+let spotifyClock = 0;
+let spotifySnap = null; // { positionMs, at, durationMs, paused, trackId }
+let spotifyPlayed = -1; // session where Spotify has actually started sounding
+
+function stopSpotifyClock() {
+  if (spotifyClock) { clearInterval(spotifyClock); spotifyClock = 0; }
+}
+
+function startSpotifyClock() {
+  if (spotifyClock) return;
+  spotifyClock = setInterval(() => {
+    if (engine !== 'spotify' || !spotifySnap || spotifySnap.paused || pausing) return;
+    const elapsed = (performance.now() - spotifySnap.at) / 1000;
+    const next = Math.min(state.duration || 99999, (spotifySnap.positionMs / 1000) + elapsed);
+    state.time = next;
+    emit('time');
+  }, 250);
+}
+
+function startSpotify(my, track, autoplay) {
+  const ms = rise;
+  const quiet = blend && engine === 'spotify' ? spotifyGain.to(0, blend) : null;
+  hushOthers('spotify');
+  engine = 'spotify';
+  stopSpotifyClock();
+  spotifySnap = null;
+  if (!spotify.isSignedIn()) {
+    fail(my, 'Sign in to Spotify in Settings to play this song.');
+    return;
+  }
+  if (!autoplay) {
+    state.loading = false;
+    emit('state');
+    return;
+  }
+  Promise.resolve(quiet).then(async () => {
+    if (my !== session) return;
+    startQuiet(my, spotifyGain, ms);
+    await spotify.playTrack(track.spotifyId);
+  }).catch((e) => {
+    if (my === session) fail(my, e?.message || "Spotify couldn't play this song.");
+  });
+}
+
+spotify.onPlayback((ev) => {
+  const track = current();
+  if (engine !== 'spotify' || track?.source !== 'spotify') return;
+  if (ev.type === 'error') return fail(session, ev.message || "Spotify couldn't play this song.");
+  if (ev.type !== 'state' || !ev.state) return;
+
+  const s = ev.state;
+  const curId = s.track_window?.current_track?.id;
+  if (curId && curId !== track.spotifyId) {
+    // Spotify moved on from our track on its own, or an older track state arrived late.
+    if (spotifyPlayed === session && s.track_window?.previous_tracks?.some((t) => t.id === track.spotifyId)) {
+      stopSpotifyClock();
+      finished();
+    }
+    return;
+  }
+
+  const prev = spotifySnap;
+  const dur = (s.duration || 0) / 1000;
+  if (dur > 0) state.duration = dur;
+
+  // Detect natural end of single-track playback: was playing near end (or playing), now paused at position 0.
+  if (spotifyPlayed === session && prev && !prev.paused && s.paused && s.position === 0 && !pausing) {
+    stopSpotifyClock();
+    spotifySnap = { positionMs: 0, at: performance.now(), durationMs: s.duration || 0, paused: true, trackId: curId };
+    finished();
+    return;
+  }
+
+  spotifySnap = { positionMs: s.position || 0, at: performance.now(), durationMs: s.duration || 0, paused: !!s.paused, trackId: curId };
+  if (pausing) return;
+
+  const playing = !s.paused && !s.loading;
+  if (playing && spotifyPlayed !== session) {
+    spotifyPlayed = session;
+    failures = 0;
+    sounding(spotifyGain);
+  }
+  const loading = !!s.loading || (s.paused && spotifyPlayed !== session && state.loading);
+  const changed = playing !== state.playing || loading !== state.loading;
+  state.playing = playing;
+  state.loading = loading;
+  if (playing) { state.error = null; startSpotifyClock(); } else stopSpotifyClock();
+  state.time = (s.position || 0) / 1000;
+  if (changed) emit('state');
+  emit('time');
+});
 
 // ---- YouTube songs ------------------------------------------------------------------------------
 
@@ -518,6 +626,34 @@ export function toggle() {
   const ms = prefs.pauseFadeMs || 0;
   if (engine === 'page') return tellPage({ do: state.playing || state.loading ? 'pause' : 'play', fade: ms });
 
+  if (engine === 'spotify') {
+    if (state.playing && !pausing) {
+      const my = session;
+      pausing = true;
+      state.playing = false;
+      stopSpotifyClock();
+      emit('state');
+      spotifyGain.to(0, ms).then((done) => {
+        if (!done || my !== session || !pausing) return;
+        pausing = false;
+        spotify.pausePlayback();
+      });
+    } else if (pausing) {
+      pausing = false;
+      state.playing = true;
+      startSpotifyClock();
+      emit('state');
+      spotifyGain.to(1, ms);
+    } else if (spotifyPlayed !== session) {
+      start(state.index, { fadeUp: true });
+    } else {
+      startQuiet(session, spotifyGain, ms);
+      spotify.resumePlayback();
+      spotifyGain.to(1, ms);
+    }
+    return;
+  }
+
   const music = apple.instance();
   if (engine === 'apple' && !music) return;
   const local = engine === 'local';
@@ -551,6 +687,10 @@ export function seek(seconds) {
   seconds = Math.max(0, Math.min(seconds, Math.max(0, state.duration - 0.25)));
   if (engine === 'local') audio.currentTime = seconds;
   else if (engine === 'page') tellPage({ do: 'seek', at: seconds });
+  else if (engine === 'spotify') {
+    spotify.seekPlayback(seconds);
+    if (spotifySnap) { spotifySnap.positionMs = seconds * 1000; spotifySnap.at = performance.now(); }
+  }
   else if (engine === 'apple') apple.instance()?.seekToTime(seconds)?.catch?.(() => {});
   state.time = seconds;
   emit('time');
@@ -669,6 +809,7 @@ export function setVolume(volume, { muted = false } = {}) {
   state.muted = muted;
   for (const gain of gains.values()) gain.apply();
   appleGain.apply();
+  spotifyGain.apply();
   if (engine === 'page') tellPage({ do: 'volume', level: level() });
   emit('volume');
   save();
@@ -719,5 +860,6 @@ export function restore() {
     }
   } catch { /* a damaged save is just ignored */ }
   for (const gain of gains.values()) gain.apply();
+  spotifyGain.apply();
   emit('queue'); emit('track'); emit('modes'); emit('volume'); emit('state');
 }

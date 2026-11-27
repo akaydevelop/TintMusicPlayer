@@ -9,7 +9,7 @@ import * as history from './history.js';
 
 // The settings a backup carries, with the type each must have to be taken back in.
 const SETTINGS = {
-  mainService: 'string', keepDark: 'boolean', youtube: 'boolean', youtubePlayer: 'string',
+  mainService: 'string', keepDark: 'boolean', coverBackdrop: 'boolean', youtube: 'boolean', youtubePlayer: 'string',
   pauseFadeMs: 'number', crossfadeMs: 'number', cacheKeepDays: 'number',
 };
 // Choices the page keeps itself.
